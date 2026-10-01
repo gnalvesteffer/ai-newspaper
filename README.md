@@ -22,7 +22,7 @@ Explanation results are rendered as Markdown and saved in this browser. Re-selec
 
 After a successful generation, press **Save screenshot** to download a full-page PNG to Chrome’s configured download location. Filenames include the local date/time and a short unique ID. Screenshot rendering loads html2canvas from jsDelivr, so the browser needs access to that CDN.
 
-Open the bookmark icon in the upper-left corner to save and browse editions. Saved editions are stored in this browser’s IndexedDB and include the complete article/source context, explanation highlights, chat history, and the theme, reading font, size, and scroll position. Each archive entry is labeled with its date and a one-sentence summary of the edition.
+Generated editions are automatically saved to the archive. Open the bookmark icon in the upper-left corner to browse saved editions or save the current edition again. Saved editions are stored in this browser’s IndexedDB and include the complete article/source context, explanation highlights, chat history, and the theme, reading font, size, and scroll position. Each archive entry is labeled with its date and a one-sentence summary of the edition.
 
 Article retrieval and summaries run three stories at a time. The companion server keeps generation running independently of the browser page, so refreshing reconnects to the existing job and restores its progress. The most recent finished edition is cached in browser storage and restored when no job is running. Use **Generate edition** when you want a fresh roundup.
 
