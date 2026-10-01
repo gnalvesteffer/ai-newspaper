@@ -35,6 +35,20 @@ html[data-reading-font="classic"]{--serif:Georgia,'Times New Roman',serif;--sans
 .topline{padding-left:56px;padding-right:56px}
 .explain-answer :first-child,.chat-markdown :first-child{margin-top:0}.explain-answer :last-child,.chat-markdown :last-child{margin-bottom:0}.explain-answer p,.chat-markdown p{white-space:normal;margin:7px 0}.explain-answer pre,.chat-markdown pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);padding:9px;border:1px solid var(--line);font:12px/1.5 var(--mono)}.explain-answer code,.chat-markdown code{font:.9em var(--mono);background:var(--surface);padding:1px 3px}.explain-answer pre code,.chat-markdown pre code{background:none;padding:0}.explain-answer ul,.explain-answer ol,.chat-markdown ul,.chat-markdown ol{padding-left:22px}.explain-answer blockquote,.chat-markdown blockquote{border-left:2px solid var(--red);padding-left:10px;color:var(--muted);margin:8px 0}.explain-answer a,.chat-markdown a{color:var(--red);text-decoration:underline;text-underline-offset:2px}.chat-markdown{white-space:normal}.chat-markdown h1,.chat-markdown h2,.chat-markdown h3{font:600 17px/1.3 var(--serif);margin:12px 0 5px}.chat-table-wrap{max-width:100%;overflow-x:auto;margin:10px 0}.chat-markdown table,.explain-answer table{border-collapse:collapse;min-width:100%;font:12px/1.45 var(--sans)}.chat-markdown th,.chat-markdown td,.explain-answer th,.explain-answer td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top;max-width:240px;overflow-wrap:anywhere}.chat-markdown th,.explain-answer th{background:var(--surface);font-weight:600}.saved-explanation-preview{position:fixed;z-index:40;max-width:min(320px,calc(100vw - 24px));padding:9px 11px;background:var(--ink);color:var(--paper);box-shadow:3px 3px 0 #0003;font:12px/1.45 var(--sans);pointer-events:none}::highlight(saved-explanations){background:var(--selection);text-decoration:underline;text-decoration-style:dotted;text-decoration-color:var(--red);text-underline-offset:2px}
 .chat-launcher{position:fixed;z-index:29;top:16px;right:16px;width:44px;height:44px;display:grid;place-items:center;border:1px solid var(--line);border-radius:50%;background:var(--surface);color:var(--ink);box-shadow:0 2px 12px #0003;cursor:pointer}.chat-launcher:hover,.chat-launcher[aria-expanded="true"]{background:var(--ink);color:var(--paper)}.chat-launcher svg{width:21px;height:21px;display:block;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}@media(max-width:520px){.chat-launcher{top:10px;right:10px;width:40px;height:40px}}
+
+@media(max-width:520px){
+  .page{padding:14px 16px 42px}
+  h1{font-size:clamp(38px,11vw,50px);line-height:1.02;margin-bottom:12px}
+  .dek{font-size:14px;line-height:1.4}
+  .bar{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch;gap:7px}
+  .bar #date{white-space:normal;line-height:1.4}
+  .bar #status{order:0;flex:none;text-align:left;white-space:normal;overflow-wrap:anywhere}
+  .bar-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%;min-width:0;flex:none;margin:0;justify-content:stretch;gap:6px}
+  .bar-actions #refresh,.bar-actions #save-screenshot{grid-column:span 3}
+  .bar .bar-actions>button,.bar .settings-wrap>.icon-button{width:100%;min-width:0;height:36px;padding:6px 3px;font-size:9px}
+  .bar #theme-toggle{min-width:0}
+  .bar .icon-button{font-size:17px}
+}
 </style>
 </head>
 <body><div class="paper-texture" aria-hidden="true"></div><main class="page">
