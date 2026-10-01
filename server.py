@@ -888,16 +888,26 @@ def main():
     if host in {"0.0.0.0", "::"}:
         print(f"The Daily Signal is listening on all network interfaces at port {args.port}.")
         print(f"On this computer: http://127.0.0.1:{args.port}")
+        addresses = set()
         try:
-            addresses = sorted({
+            addresses.update({
                 result[4][0] for result in socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET)
                 if ip_address(result[4][0].split("%")[0]).is_private
                 and not ip_address(result[4][0].split("%")[0]).is_loopback
                 and not ip_address(result[4][0].split("%")[0]).is_link_local
             })
         except (OSError, ValueError):
-            addresses = []
-        for address in addresses:
+            pass
+        try:
+            # UDP connect selects the outbound interface without sending a packet.
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route_probe:
+                route_probe.connect(("192.0.2.1", 9))
+                address = route_probe.getsockname()[0]
+                if ip_address(address).is_private and not ip_address(address).is_loopback:
+                    addresses.add(address)
+        except (OSError, ValueError):
+            pass
+        for address in sorted(addresses):
             print(f"On your network: http://{address}:{args.port}")
         if not addresses:
             print(f"On your network: http://<desktop-LAN-IP>:{args.port}")
