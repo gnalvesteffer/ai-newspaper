@@ -19,3 +19,5 @@ The reader checks official and technical feeds, selected newsroom searches, and 
 Select text in the overview, a theme, or a story to ask your configured local model for a plain-English explanation. The selected passage and its nearby card context are sent only to the configured model endpoint.
 
 After a successful generation, press **Save screenshot** to download a full-page PNG to Chrome’s configured download location. Filenames include the local date/time and a short unique ID. Screenshot rendering loads html2canvas from jsDelivr, so the browser needs access to that CDN.
+
+The most recent edition is cached in browser storage and restored when the page reloads. Use **Generate edition** when you want a fresh roundup; refreshing the page does not call the model again.
