@@ -1,6 +1,6 @@
 ---
 name: daily-signal-reader-e2e-review
-description: Review The Daily Signal as a reader in a real browser, reproduce interaction or responsive-layout bugs, and verify UI fixes with isolated Playwright sessions.
+description: Use when opening or updating a Daily Signal PR, reviewing the reader in a real browser, or fixing interaction and responsive-layout bugs. Requires independent subagent review and PR comparison screenshots.
 ---
 
 # Reader browser review
@@ -46,6 +46,12 @@ It starts isolated reader and fake OpenAI-compatible servers on ephemeral loopba
 Verify scrolling with short and long histories: submission reaches the actual pane bottom after composer layout changes. Incoming chunks follow only until the question reaches the top. Wheel, touch, scrollbar, or keyboard scrolling stops that follow behavior for the current reply. Continue receiving chunks after manual scrolling to establish that the reader's position remains stable.
 
 Run the authorized interaction checks before describing a PR as functionally verified. If only syntax or screenshot checks were performed, clearly label the changed interaction as unverified and do not treat screenshots as evidence of request/stream behavior.
+
+## Independent PR review loop
+
+For every new PR and every subsequent change to that PR (including fixes and documentation), obtain an independent review from a subagent before publishing the update. Give the reviewer the base branch, current diff, user requirements, and relevant project guidance; have it inspect correctness, persistence, cancellation, security, responsive behavior, and validation gaps as applicable. The reviewer must review independently rather than implement the change it reviews. Respect the user's testing authorization; review does not itself authorize adding or running tests.
+
+Address each finding with a fix or a concrete explanation supported by code or evidence. After any fix, ask for another independent review of the updated diff. Repeat review and fixes until no actionable findings remain. Complete this loop before pushing the change or opening/updating the PR, and summarize the review outcome and any remaining limitations in the PR description. Do not describe a review as complete when findings remain unresolved. This instruction explicitly authorizes delegating these reviews to a subagent.
 
 ## Pull request comparison screenshots
 
