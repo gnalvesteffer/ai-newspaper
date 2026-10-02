@@ -41,7 +41,24 @@ Write a topic in **What should this paper cover?** and select **Generate edition
 - New open-weight language models that run on consumer GPUs
 - Urban gardening techniques for small balconies
 
-The configured model plans several focused searches from the subject; the server searches DuckDuckGo, Google News RSS, and Reddit hot results for each angle. Reddit results use the hot ranking and are limited to the selected lookback window. The search window and maximum number of articles are configurable in the settings menu. The date window is best-effort for general search results; when a source has no verifiable publication date, the paper labels it as unverified. It deduplicates results, limits repeated publishers, filters relevance with the configured model, keeps Reddit results ranked by hotness within the selected time slice, and retrieves article text where available. For JavaScript-heavy pages, it first tries Playwright with Chromium if the Python Playwright package is installed, then a headless Chromium executable (or `DAILY_SIGNAL_CHROMIUM`), followed by a public text extraction service. To enable Playwright, install `playwright` in the Python environment running the server and run `playwright install chromium`. Sources that still cannot provide readable text are labeled as feed excerpts. The model summarizes articles in parallel and then creates an aggregate overview from those summaries. Every story links to its original publisher. Search results and article text are treated as untrusted evidence; verify important claims at the source.
+The configured model plans distinct search angles and chooses relevant publisher feeds. Discovery combines DuckDuckGo, Bing News, Google News RSS, Reddit hot results, and—when appropriate—Hacker News. The built-in feed catalogue includes BBC, The Guardian, NPR, The New York Times, and NASA; the server also discovers RSS/Atom links advertised by source publishers. Results are deduplicated and filtered for relevance by your configured model, then rechecked against the retrieved article text before inclusion. For geographically restricted topics, the model identifies the named places and inclusion requires a matching quote in the retrieved source text. If the paper is underfilled, the model plans one additional bounded search round. The article count is a maximum: the server does not pad a paper with unrelated or stale sources.
+
+The search window and maximum article count (up to 100) are configurable in Settings. Known dates are checked during discovery and again when publisher metadata becomes available. Undated results remain labeled **Date unverified** rather than being assigned today's date.
+
+Article retrieval first resolves search redirects to the actual publisher, including best-effort decoding of Google News links. It reads direct HTML, article-specific containers, structured article data, and RSS/Atom content. Navigation, advertisements, and related-story containers are excluded. If direct retrieval is insufficient, it tries Playwright, an installed Chromium executable (or `DAILY_SIGNAL_CHROMIUM`), then a public text extraction service. Scraping and summarization use separate worker queues, so slow publishers do not hold up summaries of readable pages. Public retrieval results are briefly cached; paper state remains isolated per browser.
+
+Each story identifies what was available: **Full article read**, **Publisher feed text**, **Partial article text**, **Publisher page text**, **Reddit post and discussion**, or **Feed excerpt only**. A long page or search snippet alone is not considered a full article. Paywalls, bot challenges, and unavailable pages can still prevent full retrieval; Google News's public redirect protocol is unsupported and may change. The stored source context retains up to 30,000 characters per story for later chat and explanations. Model input is bounded separately for smaller context windows. Every story links to its original publisher. Sources and model output are untrusted evidence; verify important claims at the source.
+
+### Add publisher sources
+
+Operators can supplement the built-in discovery with repeatable RSS/Atom feed arguments:
+
+```sh
+./run.sh --source-feed https://www.nasa.gov/feed/ \
+  --source-feed https://feeds.bbci.co.uk/news/world/rss.xml
+```
+
+Alternatively set `DAILY_SIGNAL_SOURCE_FEEDS` to a comma-separated list of feed URLs. These settings belong to the server; relevance and lookback checks still apply to custom feeds. Existing model environment variables or command-line options are required as described below.
 
 ## Configure the local model
 

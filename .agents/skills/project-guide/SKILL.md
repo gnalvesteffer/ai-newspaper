@@ -30,3 +30,7 @@ description: Use when changing, reviewing, or explaining The Daily Signal projec
 - Keep network access loopback-only by default. `--lan` intentionally exposes the unauthenticated reader and its API to the local network; document this and do not make it the default.
 - Avoid adding dependencies unless the feature needs them. The server is designed to run with Python's standard library.
 - Update `README.md` when changing user-visible setup, options, persistence, or model behavior.
+
+## Source retrieval changes
+
+`article_reader.py` owns scoped HTML/JSON-LD extraction and search-link normalization. `server.py` owns source planning, public feeds/indexes, best-effort Google News publisher resolution, caching, and independent reading/summarization queues. Keep access challenges and partial articles honestly labeled; never equate page length with a full article. Custom feeds use `--source-feed` or `DAILY_SIGNAL_SOURCE_FEEDS`. Run `python3 -m unittest discover -s tests -v` when the user requests retrieval verification, and supplement mocks with bounded live reads on several publishers. Preserve publication-date uncertainty and per-browser job isolation.
