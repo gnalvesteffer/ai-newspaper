@@ -40,6 +40,22 @@ def configured_model():
     return config
 
 
+def validate_model_config(endpoint, model, context_length, output_tokens):
+    """Fail fast for missing or malformed OpenAI-compatible server settings."""
+    if not model.strip():
+        raise ValueError("No model name configured. Set DAILY_SIGNAL_LLM_MODEL or pass --llm-model.")
+    parsed = urlparse(endpoint.strip())
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("The model endpoint must be an http(s) OpenAI-compatible endpoint URL without credentials, query, or fragment.")
+    if context_length < 1024:
+        raise ValueError("Model context length must be at least 1024 tokens.")
+    if not 256 <= output_tokens <= 65536:
+        raise ValueError("Output token budget must be between 256 and 65536 tokens.")
+    if output_tokens >= context_length:
+        raise ValueError("Output token budget must be smaller than the model context length.")
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -651,6 +667,34 @@ def headless_browser_html(url):
         return completed.stdout[:5_000_000]
 
 
+def playwright_article_html(url):
+    """Render article pages with Playwright when its Python package is installed."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return ""
+    try:
+        with sync_playwright() as playwright:
+            options = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+            executable = find_headless_browser()
+            if executable:
+                options["executable_path"] = executable
+            browser = playwright.chromium.launch(**options)
+            try:
+                page = browser.new_page(user_agent=USER_AGENT)
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(2500)
+                # Trigger lazy-loaded article sections before taking the rendered DOM.
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(750)
+                page.evaluate("window.scrollTo(0, 0)")
+                return page.content()[:5_000_000]
+            finally:
+                browser.close()
+    except Exception as exc:
+        raise RuntimeError(f"Playwright could not render the page: {exc}") from exc
+
+
 def extract_article_html(html):
     parser = ArticleTextParser()
     parser.feed(html)
@@ -690,6 +734,15 @@ def article_text(item):
     # Render pages that use client-side rendering or block lightweight HTML readers.
     if not reddit_text and len(text) < 2500:
         try:
+            rendered = playwright_article_html(target)
+            extracted = extract_article_html(rendered) if rendered else ""
+            if len(extracted) > len(text):
+                text = extracted
+                item["read_method"] = "Playwright"
+        except Exception as exc:
+            item["playwright_error"] = str(exc)[:180]
+    if not reddit_text and len(text) < 2500:
+        try:
             rendered = headless_browser_html(target)
             extracted = extract_article_html(rendered) if rendered else ""
             if len(extracted) > len(text):
@@ -723,7 +776,9 @@ def article_text(item):
         if item.get("browser_error"):
             failures.append("headless browser could not read the page")
         elif not find_headless_browser():
-            failures.append("install Chromium to render script-heavy pages")
+            failures.append("install Playwright with Chromium (pip install playwright; playwright install chromium)")
+        if item.get("playwright_error"):
+            failures.append("Playwright could not read the page")
         if item.get("reader_error"):
             failures.append("text extraction fallback unavailable")
         if not item.get("browser_error") and find_headless_browser():
@@ -1302,7 +1357,14 @@ def main():
     parser.add_argument("--llm-context-length", type=int, default=int(os.environ.get("DAILY_SIGNAL_LLM_CONTEXT_LENGTH", "131072")), help="Model context length in tokens (env: DAILY_SIGNAL_LLM_CONTEXT_LENGTH)")
     parser.add_argument("--llm-output-tokens", type=int, default=int(os.environ.get("DAILY_SIGNAL_LLM_OUTPUT_TOKENS", "16384")), help="Maximum output tokens per model call (env: DAILY_SIGNAL_LLM_OUTPUT_TOKENS)")
     parser.add_argument("--llm-api-key", default=os.environ.get("DAILY_SIGNAL_LLM_API_KEY", ""), help="Optional model API key (env: DAILY_SIGNAL_LLM_API_KEY)")
+    parser.add_argument("--check-config", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    try:
+        validate_model_config(args.llm_endpoint, args.llm_model, args.llm_context_length, args.llm_output_tokens)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.check_config:
+        return
     global MODEL_CONFIG
     MODEL_CONFIG = {
         "endpoint": args.llm_endpoint.rstrip("/"), "model": args.llm_model,

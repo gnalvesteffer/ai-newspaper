@@ -23,7 +23,7 @@ Open `http://127.0.0.1:8765` in Chrome. Keep the terminal open while using the p
 
 The server prints LAN addresses to try. Open one from the phone or other computer. The same options can be set explicitly, for example `./run.sh --host 0.0.0.0 --port 8765`. LAN mode has no sign-in, so use it only on a trusted network. If another device cannot connect, check the desktop firewall for the selected TCP port.
 
-Configure the model on the server process, not in the browser. For example:
+Configure the model on the server process, not in the browser. `run.sh` checks this configuration and exits before starting the web server if it is missing or malformed. For example:
 
 ```sh
 export DAILY_SIGNAL_LLM_ENDPOINT=http://localhost:1234/v1
@@ -37,6 +37,7 @@ The backend supports OpenAI-compatible Chat Completions only; in LM Studio, enab
 
 - **Page unavailable:** confirm the process is running, use the printed address and port, and check the firewall when connecting over the LAN.
 - **Feeds unavailable:** generation needs outbound internet access. Feed errors are reported separately from model errors.
+- **Feed excerpts only:** the server tries direct extraction, Playwright, headless Chromium, then a public text extraction service. For Playwright rendering, install the Python package and its browser with `pip install playwright` and `playwright install chromium` in the server's Python environment.
 - **Model connection failure:** verify `DAILY_SIGNAL_LLM_ENDPOINT`, `DAILY_SIGNAL_LLM_MODEL`, and the optional API key in the server process environment. LM Studio must have the model loaded and its OpenAI-compatible server enabled.
 - **Context overflow:** confirm `DAILY_SIGNAL_LLM_CONTEXT_LENGTH` is supported by the loaded model. Chat history is compacted server-side when needed; very small context windows can still reject a long current question or attached source context.
 - **No recent generation after refresh:** generation state is held by the running server process. Refresh reconnects while that process remains alive; restarting the process ends the in-memory job.
