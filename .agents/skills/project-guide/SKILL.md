@@ -38,3 +38,7 @@ description: Use when changing, reviewing, or explaining The Daily Signal projec
 ## Chat form regressions
 
 JavaScript syntax validation does not catch a nested callback shadowing a submit-event parameter: a hoisted declaration can make `preventDefault()` fail and allow native form navigation. Give submit events and stream callbacks distinct names. When interaction testing is authorized, use the reader-e2e-review helpers to submit through real controls and check API request counts, navigation, runtime errors, and partial streaming; simulated UI screenshots alone do not exercise that path.
+
+## Pull requests
+
+When opening or changing a PR, follow reader-e2e-review’s independent subagent review and fix loop before publishing each update, including fixes and documentation changes. Address findings and obtain another review after fixes. Follow its screenshot attachment and temporary branch cleanup guidance for visible changes.

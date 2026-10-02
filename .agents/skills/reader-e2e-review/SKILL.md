@@ -1,6 +1,6 @@
 ---
 name: daily-signal-reader-e2e-review
-description: Review The Daily Signal as a reader in a real browser, reproduce interaction or responsive-layout bugs, and verify UI fixes with isolated Playwright sessions.
+description: Use when opening or updating a Daily Signal PR, reviewing the reader in a real browser, or fixing interaction and responsive-layout bugs. Requires independent subagent review and PR comparison screenshots.
 ---
 
 # Reader browser review
@@ -47,10 +47,18 @@ Verify scrolling with short and long histories: submission reaches the actual pa
 
 Run the authorized interaction checks before describing a PR as functionally verified. If only syntax or screenshot checks were performed, clearly label the changed interaction as unverified and do not treat screenshots as evidence of request/stream behavior.
 
+## Independent PR review loop
+
+For every new PR and every subsequent change to that PR (including fixes and documentation), obtain an independent review from a subagent before publishing the update. Give the reviewer the base branch, current diff, user requirements, and relevant project guidance; have it inspect correctness, persistence, cancellation, security, responsive behavior, and validation gaps as applicable. The reviewer must review independently rather than implement the change it reviews. Respect the user's testing authorization; review does not itself authorize adding or running tests.
+
+Address each finding with a fix or a concrete explanation supported by code or evidence. After any fix, ask for another independent review of the updated diff. Repeat review and fixes until no actionable findings remain. Complete this loop before pushing the change or opening/updating the PR, and summarize the review outcome and any remaining limitations in the PR description. Do not describe a review as complete when findings remain unresolved. This instruction explicitly authorizes delegating these reviews to a subagent.
+
 ## Pull request comparison screenshots
 
 When opening or updating a PR with visible reader changes, attach before-and-after screenshots to the PR description. Capture the base and proposed versions using the same paper or deterministic fixture, theme, viewport, reading size, scroll position, and interaction state. Include the views that demonstrate the changes, such as phone generation controls, tablet status text, or an open chat panel. Wait for fonts and transitions, inspect both images, and label each pair with its viewport and state.
 
 Use image URLs that reviewers can access and render in the PR, with before/after images next to each other in a Markdown table. Verify the links after publishing. Local filesystem paths are not attachments. Preserve the existing PR description and state whether the comparison uses sample data. Keep browser profiles and incidental screenshots out of the feature diff; if repository hosting is needed, a dedicated screenshot artifact branch can hold the selected images.
+
+Treat screenshot artifact branches as temporary. When a PR is merged or closed and branch cleanup is requested, delete its remote screenshot branch along with its feature branch. Keep screenshot branches only for open PRs, and mention that deleting them can affect long-term availability of the image links in historical PR descriptions. Avoid leaving a separate artifact branch behind for every completed review.
 
 Report concrete findings, changes, and the limits of validation. A new skill/helper should be validated with skill-creator's validator and exercised before completion.
