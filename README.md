@@ -2,6 +2,26 @@
 
 A local, topic-driven newspaper. Tell it what you want to follow—anything from new developer tools to regional transit, battery research, or balcony gardening—and it searches the public web, reads the available source pages, summarizes each source with your configured local model, and synthesizes a concise overview.
 
+## Requirements
+
+- Python 3.8 or newer. The server otherwise uses only Python's standard library.
+- An OpenAI-compatible Chat Completions endpoint reachable from the machine running the server, plus a model name. `run.sh` validates the settings and exits before listening if the endpoint URL or model name is invalid; see [Configure the local model](#configure-the-local-model).
+- Outbound internet access from the server for public web search and article retrieval.
+- Optional, for JavaScript-heavy article pages: Playwright for Python and its matching Chromium browser. Install them with:
+
+  ```sh
+  python3 -m pip install --user playwright
+  python3 -m playwright install chromium
+  ```
+
+  On Linux, Chromium also needs OS shared libraries and fonts. Playwright's `install-deps` helper installs these on supported Debian/Ubuntu systems (it may require root):
+
+  ```sh
+  sudo python3 -m playwright install-deps chromium
+  ```
+
+  On other Linux distributions, install the equivalent Chromium runtime libraries with that distribution's package manager. Playwright's [browser installation guide](https://playwright.dev/python/docs/browsers#install-system-dependencies) lists the current dependencies and supported platforms. Without Playwright, the server can still use an installed Chromium executable or its text-extraction fallback.
+
 ## Run it
 
 From this directory, run:
@@ -46,7 +66,7 @@ The same settings are available as command-line options, such as `./run.sh --llm
 - The chat sidebar can search the web, cites the supplied results, and compacts older conversation context when needed.
 - Use **Save screenshot** to download a full-page PNG. Screenshot rendering loads html2canvas from jsDelivr, so the browser needs access to that CDN.
 
-The page uses a locally served paper-grain texture. The server uses Python's standard library and does not need a package install.
+The page uses a locally served paper-grain texture. Playwright is optional and only used to render JavaScript-heavy publisher pages.
 
 ## Agent guidance
 
