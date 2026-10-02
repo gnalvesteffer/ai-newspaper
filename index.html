@@ -158,7 +158,7 @@ function matchCachedExplanation(){return activeEditionExplanations.find(item=>it
 function showExplanationSources(target,sources,note=''){target.replaceChildren();if(sources?.length){target.append(document.createTextNode('Sources: '));sources.forEach((source,index)=>{if(index)target.append(document.createTextNode(' · '));const link=document.createElement('a');link.href=safeHref(source.link);link.target='_blank';link.rel='noopener';link.textContent=source.publisher||source.headline||'Original source';target.append(link)})}if(note){if(sources?.length)target.append(document.createTextNode(' · '));target.append(document.createTextNode(`Web search unavailable: ${note}`))}target.hidden=!sources?.length&&!note}
 // One shared reader: starting a different passage stops the previous playback.
 const speechAvailable='speechSynthesis' in window&&'SpeechSynthesisUtterance' in window;
-let speechSession=null;
+let speechSession=null,narrationRequest=null;
 const VOICE_KEY='daily-signal-reading-voice';
 function savedVoice(){try{return localStorage.getItem(VOICE_KEY)||''}catch{return ''}}
 function voiceId(voice){return JSON.stringify([voice.voiceURI,voice.name,voice.lang])}
@@ -178,19 +178,19 @@ if(speechAvailable)speechSynthesis.addEventListener('voiceschanged',()=>refreshV
 refreshVoiceOptions(savedVoice());
 function syncSpeechControls(){
  const paper=document.getElementById('read-paper'),selection=document.querySelector('.explain-read');
- const playing=!!speechSession;const preview=document.getElementById('preview-voice');preview.textContent=speechSession?.kind==='preview'?'■ Stop preview':'▶ Preview voice';if(speechSession?.kind!=='preview')document.getElementById('voice-preview-status').textContent='';
+ const playing=!!speechSession||!!narrationRequest;const preview=document.getElementById('preview-voice');preview.textContent=speechSession?.kind==='preview'?'■ Stop preview':'▶ Preview voice';if(speechSession?.kind!=='preview')document.getElementById('voice-preview-status').textContent='';
  paper.disabled=!speechAvailable||(!playing&&!currentEdition?.articles?.length);
- paper.textContent=playing?'■ Stop reading':'▶ Read aloud';
+ paper.textContent=narrationRequest?'■ Stop preparing':playing?'■ Stop reading':'▶ Read aloud';
  paper.setAttribute('aria-pressed',String(playing));
  paper.title=speechAvailable?'Read the complete paper; click again to stop':'Read aloud is unavailable in this browser';
  if(selection){const selected=playing&&speechSession.kind==='selection';selection.disabled=!speechAvailable;selection.textContent=selected?'■ Stop reading':'▶ Read selection';selection.setAttribute('aria-pressed',String(selected));selection.title=speechAvailable?'Read the highlighted text aloud':'Read aloud is unavailable in this browser'}
 }
 function clearSpeechHighlights(){if(window.CSS?.highlights){CSS.highlights.delete('speech-section');CSS.highlights.delete('speech-word')}document.querySelectorAll('.speech-reading').forEach(node=>node.classList.remove('speech-reading'))}
-function stopReading(){const previous=speechSession;speechSession=null;if(previous)window.speechSynthesis.cancel();clearSpeechHighlights();syncSpeechControls()}
+function stopReading(){if(narrationRequest){const request=narrationRequest;narrationRequest=null;request.controller.abort();if(document.getElementById('status').textContent==='Preparing reporter narration…')document.getElementById('status').textContent='Narration preparation stopped'}const previous=speechSession;speechSession=null;if(previous)window.speechSynthesis.cancel();clearSpeechHighlights();syncSpeechControls()}
 function speechSegment(range,element){const nodes=[],walker=document.createTreeWalker(range.commonAncestorContainer,NodeFilter.SHOW_TEXT);const candidates=range.commonAncestorContainer.nodeType===Node.TEXT_NODE?[range.commonAncestorContainer]:[];while(walker.nextNode())candidates.push(walker.currentNode);let text='';for(const node of candidates){if(!range.intersectsNode(node))continue;const start=node===range.startContainer?range.startOffset:0,end=node===range.endContainer?range.endOffset:node.length;if(end<=start)continue;nodes.push({node,start,end,offset:text.length});text+=node.data.slice(start,end)}return{text,nodes,range:range.cloneRange(),element}}
 function speechRange(segment,start,end){const first=segment.nodes.find(item=>start>=item.offset&&start<item.offset+item.end-item.start),last=segment.nodes.find(item=>end>item.offset&&end<=item.offset+item.end-item.start);if(!first||!last)return null;const range=document.createRange();range.setStart(first.node,first.start+start-first.offset);range.setEnd(last.node,last.start+end-last.offset);return range}
 function speechChunks(segment){const chunks=[];let offset=0;while(offset<segment.text.length){while(/\s/.test(segment.text[offset]||'')&&offset<segment.text.length)offset++;if(offset>=segment.text.length)break;let end=Math.min(segment.text.length,offset+220);if(end<segment.text.length){const candidate=segment.text.slice(offset,end),sentence=Math.max(candidate.lastIndexOf('. '),candidate.lastIndexOf('? '),candidate.lastIndexOf('! ')),space=candidate.search(/\s+\S*$/);end=offset+(sentence>40?sentence+1:space>0?space:220)}chunks.push({segment,start:offset,text:segment.text.slice(offset,end)});offset=end}return chunks}
-function highlightSpeech(chunk,wordStart=null,wordEnd=null){clearSpeechHighlights();const segment=chunk.segment;if(!segment.range)return;if(window.CSS?.highlights&&typeof Highlight!=='undefined'){CSS.highlights.set('speech-section',new Highlight(segment.range));if(wordStart!==null){const range=speechRange(segment,chunk.start+wordStart,chunk.start+wordEnd);if(range)CSS.highlights.set('speech-word',new Highlight(range))}}else segment.element?.classList.add('speech-reading')}
+function highlightSpeech(chunk,wordStart=null,wordEnd=null){clearSpeechHighlights();const segment=chunk.segment;if(!segment.range)return;if(window.CSS?.highlights&&typeof Highlight!=='undefined'){CSS.highlights.set('speech-section',new Highlight(segment.range));if(wordStart!==null&&segment.nodes.length){const range=speechRange(segment,chunk.start+wordStart,chunk.start+wordEnd);if(range)CSS.highlights.set('speech-word',new Highlight(range))}}else segment.element?.classList.add('speech-reading')}
 function startReading(segments,kind,selectedVoice=savedVoice()){
  stopReading();if(!speechAvailable)return;
  const chunks=segments.flatMap(speechChunks);if(!chunks.length)return;
@@ -203,7 +203,22 @@ function startReading(segments,kind,selectedVoice=savedVoice()){
  try{window.speechSynthesis.speak(utterance)}catch{stopReading();document.getElementById('status').textContent='Could not start read aloud'}
  };speakNext();
 }
-function readPaper(){if(speechSession){stopReading();return}if(!currentEdition)return;const segments=[...document.querySelectorAll('.masthead h1,#overview,.theme h3,.theme p,.article h3,.article p')].map(element=>{const range=document.createRange();range.selectNodeContents(element);return speechSegment(range,element)});startReading(segments,'paper')}
+function paperNarrationSections(){return [...document.querySelectorAll('.masthead h1,#overview,.theme h3,.theme p,.article h3,.article p')].filter(element=>element.textContent.trim()).map((element,index)=>({id:String(index),text:element.textContent.trim(),element}))}
+function validNarration(script,sections){return script?.version===1&&Array.isArray(script.sections)&&script.sections.length===sections.length&&script.sections.every((row,index)=>row?.id===sections[index].id&&typeof row.text==='string'&&row.text.trim())}
+async function readPaper(){
+ if(speechSession||narrationRequest){stopReading();return}if(!currentEdition||!speechAvailable)return;
+ const edition=currentEdition,editionId=activeEditionId,sections=paperNarrationSections(),signature=JSON.stringify(sections.map(({id,text})=>({id,text})));
+ let script=edition.narration;
+ if(script?.signature!==signature||!validNarration(script,sections)){
+  const request={controller:new AbortController(),editionId};narrationRequest=request;syncSpeechControls();document.getElementById('status').textContent='Preparing reporter narration…';
+  try{const response=await fetch('/api/narration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sections:sections.map(({id,text})=>({id,text}))}),signal:request.controller.signal});const data=await response.json();if(!response.ok)throw Error(data.error||'Could not prepare narration');if(narrationRequest!==request||currentEdition!==edition||activeEditionId!==editionId)return;if(!validNarration(data,sections))throw Error('The narration does not match this paper');script={...data,signature};edition.narration=script;
+   if(activeEditionRecord){activeEditionRecord.page=JSON.parse(JSON.stringify(edition));await persistActiveSavedEdition()}
+   try{const cached=JSON.parse(localStorage.getItem(EDITION_KEY)||'null');if(cached&&String(cached.savedAt)===editionId){cached.result=edition;localStorage.setItem(EDITION_KEY,JSON.stringify(cached))}}catch{}
+  }catch(error){if(narrationRequest===request){narrationRequest=null;syncSpeechControls();document.getElementById('status').textContent=error.name==='AbortError'?'Narration preparation stopped':`Narration unavailable: ${error.message}`}return}
+  if(narrationRequest!==request||currentEdition!==edition||activeEditionId!==editionId)return;narrationRequest=null;document.getElementById('status').textContent='Reporter narration ready';
+ }
+ const segments=script.sections.map((row,index)=>{const element=sections[index].element,range=document.createRange();range.selectNodeContents(element);return{text:row.text,nodes:[],range,element}});startReading(segments,'paper');
+}
 document.getElementById('read-paper').addEventListener('click',readPaper);
 window.addEventListener('pagehide',stopReading);
 syncSpeechControls();
