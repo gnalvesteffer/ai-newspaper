@@ -30,4 +30,10 @@ It uses isolated browser storage and intercepts `/api/*` with deterministic pape
 
 Playwright and its Chromium installation must be available in the Python environment. Use `--chromium-path` to select an existing browser executable if necessary. If Chromium shows empty text or crashes in FontConfig while computed styles and text nodes are present, verify the browser environment before diagnosing the app. A minimal temporary `FONTCONFIG_FILE` using installed font directories can isolate host font issues. Do not commit host-specific font paths or change the app's font stack to conceal that failure.
 
-Report concrete findings, changes, and the limits of validation. Keep generated screenshots and browser profiles out of the repository. A new skill/helper should be validated with skill-creator's validator and exercised before completion.
+## Pull request comparison screenshots
+
+When opening or updating a PR with visible reader changes, attach before-and-after screenshots to the PR description. Capture the base and proposed versions using the same paper or deterministic fixture, theme, viewport, reading size, scroll position, and interaction state. Include the views that demonstrate the changes, such as phone generation controls, tablet status text, or an open chat panel. Wait for fonts and transitions, inspect both images, and label each pair with its viewport and state.
+
+Use image URLs that reviewers can access and render in the PR, with before/after images next to each other in a Markdown table. Verify the links after publishing. Local filesystem paths are not attachments. Preserve the existing PR description and state whether the comparison uses sample data. Keep browser profiles and incidental screenshots out of the feature diff; if repository hosting is needed, a dedicated screenshot artifact branch can hold the selected images.
+
+Report concrete findings, changes, and the limits of validation. A new skill/helper should be validated with skill-creator's validator and exercised before completion.
