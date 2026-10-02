@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import argparse
+import base64
+import binascii
 import os
 import queue
 import re
@@ -244,6 +246,36 @@ def fetch_bytes(url, timeout=18, limit=2_000_000, accept="application/rss+xml, a
         return response.read(limit), response.headers.get_content_type(), response.geturl(), response.headers.get_content_charset() or "utf-8"
 
 
+def is_google_news_url(url):
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    return host == "news.google.com"
+
+
+def decode_legacy_google_news_url(url):
+    """Decode older Google News RSS IDs that contain the publisher URL inline."""
+    parsed = urlparse(url)
+    if not is_google_news_url(url):
+        return ""
+    parts = parsed.path.rstrip("/").split("/")
+    if len(parts) < 2 or parts[-2] not in {"articles", "read"}:
+        return ""
+    token = parts[-1]
+    try:
+        decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode("latin1", "ignore")
+    except (ValueError, binascii.Error):
+        return ""
+    start = min((idx for idx in (decoded.find("https://"), decoded.find("http://")) if idx >= 0), default=-1)
+    if start < 0:
+        return ""
+    end_candidates = [idx for idx in (decoded.find("\xd2\x01\x00", start), decoded.find("\x00", start)) if idx >= 0]
+    candidate = decoded[start:min(end_candidates)] if end_candidates else decoded[start:]
+    candidate = candidate.strip()
+    target = urlparse(candidate)
+    if target.scheme not in {"http", "https"} or not target.hostname or target.hostname.lower().endswith("google.com"):
+        return ""
+    return candidate
+
+
 class WebSearchParser(HTMLParser):
     """Extract DuckDuckGo HTML search result cards without a browser dependency."""
     def __init__(self):
@@ -378,24 +410,46 @@ def reddit_hot_search(query, days, limit=25):
     except Exception:
         # Some Reddit edge nodes block RSS but still serve their public listing JSON.
         api_url = "https://www.reddit.com/search.json?" + params
-        raw, _, _, _ = fetch_bytes(api_url, timeout=18, limit=2_000_000, accept="application/json")
-        payload = json.loads(raw)
-        rows = []
-        for rank, child in enumerate(payload.get("data", {}).get("children", []), 1):
-            post = child.get("data", {})
-            created = datetime.fromtimestamp(float(post.get("created_utc", 0)), timezone.utc).isoformat()
-            permalink = post.get("permalink", "")
-            if not permalink:
-                continue
-            rows.append({
-                "title": plain(post.get("title", "")),
-                "link": "https://www.reddit.com" + permalink,
-                "excerpt": plain(post.get("selftext", ""))[:1800],
-                "publisher": "Reddit · r/" + str(post.get("subreddit", "")),
-                "published": created, "feed": "Reddit · hot", "weight": 4,
-                "reddit": True, "reddit_rank": rank, "reddit_score": int(post.get("score", 0)),
-                "news_search": False,
-            })
+        try:
+            raw, _, _, _ = fetch_bytes(api_url, timeout=18, limit=2_000_000, accept="application/json")
+            payload = json.loads(raw)
+            rows = []
+            for rank, child in enumerate(payload.get("data", {}).get("children", []), 1):
+                post = child.get("data", {})
+                created = datetime.fromtimestamp(float(post.get("created_utc", 0)), timezone.utc).isoformat()
+                permalink = post.get("permalink", "")
+                if not permalink:
+                    continue
+                rows.append({
+                    "title": plain(post.get("title", "")),
+                    "link": "https://www.reddit.com" + permalink,
+                    "excerpt": plain(post.get("selftext", ""))[:1800],
+                    "publisher": "Reddit · r/" + str(post.get("subreddit", "")),
+                    "published": created, "feed": "Reddit · hot", "weight": 4,
+                    "reddit": True, "reddit_rank": rank, "reddit_score": int(post.get("score", 0)),
+                    "news_search": False,
+                })
+        except Exception:
+            # Some networks block Reddit entirely. Use the public search index
+            # as a non-bypassing fallback; these rows are not represented as hot-ranked.
+            cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+            indexed = search_web(f"site:reddit.com {query} after:{cutoff_date}", limit)
+            rows = []
+            for rank, result in enumerate(indexed, 1):
+                link = str(result.get("url", ""))
+                parsed = urlparse(link)
+                if parsed.scheme not in {"http", "https"} or not (parsed.hostname or "").lower().endswith("reddit.com"):
+                    continue
+                match = re.search(r"/r/([^/]+)", parsed.path)
+                rows.append({
+                    "title": plain(result.get("title", "")), "link": link,
+                    "excerpt": plain(result.get("snippet", ""))[:1800],
+                    "publisher": "Reddit" + (" · r/" + match.group(1) if match else ""),
+                    "published": "", "search_found_at": now_iso(),
+                    "feed": "Reddit · indexed search", "weight": 3,
+                    "reddit": True, "reddit_rank": rank, "reddit_score": 0,
+                    "news_search": False,
+                })
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     result = []
     for row in rows:
@@ -658,7 +712,8 @@ def get_reddit_thread(item):
         item["reddit_score"] = post.get("score", 0)
         item["publisher"] = "Reddit · r/" + post.get("subreddit", "AI")
         return "\n\n".join(parts), article_url
-    except Exception:
+    except Exception as exc:
+        item["reddit_error"] = str(exc)[:180]
         return None
 
 
@@ -703,11 +758,11 @@ def headless_browser_html(url):
 
 
 def playwright_article_html(url):
-    """Render a page with the worker thread's reusable Playwright browser."""
+    """Render the publisher page, following Google News' JS redirect when needed."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return ""
+        return "", ""
     if getattr(ARTICLE_BROWSER_LOCAL, "failed", False):
         raise RuntimeError("The reusable Playwright browser could not be started")
     state = getattr(ARTICLE_BROWSER_LOCAL, "state", None)
@@ -730,12 +785,19 @@ def playwright_article_html(url):
         page = browser.new_page(user_agent=USER_AGENT)
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=12000)
+            if is_google_news_url(page.url):
+                try:
+                    page.wait_for_url(lambda candidate: not is_google_news_url(candidate), timeout=8000)
+                except Exception:
+                    pass
+                if is_google_news_url(page.url):
+                    return "", page.url
             # Briefly allow client-side hydration, then trigger common lazy-loaded bodies.
             page.wait_for_timeout(300)
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(200)
             page.evaluate("window.scrollTo(0, 0)")
-            return page.content()[:5_000_000]
+            return page.content()[:5_000_000], page.url
         finally:
             page.close()
     except Exception as exc:
@@ -777,32 +839,52 @@ def article_text(item):
     """Fetch the linked page and extract full article text when the publisher exposes it."""
     reddit = get_reddit_thread(item) if item.get("reddit") else None
     reddit_text, target = reddit if reddit else ("", item["link"])
+    parsed_target = urlparse(target)
+    blocked_reddit_page = bool(item.get("reddit_error") and (parsed_target.hostname or "").lower().endswith("reddit.com"))
     text = ""
     final_url = target
+    if is_google_news_url(target):
+        publisher_url = decode_legacy_google_news_url(target)
+        if publisher_url:
+            target = final_url = publisher_url
+            item["url_resolution"] = "Google News URL decoded"
+        else:
+            item["url_resolution"] = "Google News redirect pending browser"
     try:
-        parsed = urlparse(target)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("Unsupported article URL")
-        try:
-            addr = ip_address(parsed.hostname)
-            if not addr.is_global:
-                raise ValueError("Refusing a non-public article address")
-        except ValueError as exc:
-            if "non-public" in str(exc):
-                raise
-        fetch_started = time.perf_counter()
-        data, content_type, final_url, charset = fetch_bytes(target, timeout=20, limit=2_000_000, accept="text/html,application/xhtml+xml,*/*")
-        if "html" in content_type or data[:100].lstrip().lower().startswith((b"<!doctype html", b"<html")):
-            text = extract_article_html(data.decode(charset, errors="replace"))
-        print(f"[article read] publisher fetch and extraction · {time.perf_counter() - fetch_started:.1f}s · {len(text)} chars", flush=True)
+        if blocked_reddit_page:
+            item["read_error"] = "Reddit's public post endpoint was unavailable; used the indexed excerpt instead"
+        elif is_google_news_url(target):
+            item["url_resolution_error"] = "Google News did not expose a publisher URL in its feed link"
+        else:
+            parsed = urlparse(target)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ValueError("Unsupported article URL")
+            try:
+                addr = ip_address(parsed.hostname)
+                if not addr.is_global:
+                    raise ValueError("Refusing a non-public article address")
+            except ValueError as exc:
+                if "non-public" in str(exc):
+                    raise
+            fetch_started = time.perf_counter()
+            data, content_type, final_url, charset = fetch_bytes(target, timeout=20, limit=2_000_000, accept="text/html,application/xhtml+xml,*/*")
+            if "html" in content_type or data[:100].lstrip().lower().startswith((b"<!doctype html", b"<html")):
+                text = extract_article_html(data.decode(charset, errors="replace"))
+            print(f"[article read] publisher fetch and extraction · {time.perf_counter() - fetch_started:.1f}s · {len(text)} chars", flush=True)
     except Exception as exc:
         item["read_error"] = str(exc)[:180]
     # Render pages that use client-side rendering or block lightweight HTML readers.
     playwright_rendered = False
-    if not reddit_text and len(text) < 2500:
+    if not reddit_text and not blocked_reddit_page and len(text) < 2500:
         try:
             browser_started = time.perf_counter()
-            rendered = playwright_article_html(target)
+            rendered, browser_url = playwright_article_html(target)
+            if is_google_news_url(target):
+                if is_google_news_url(browser_url):
+                    item["url_resolution_error"] = "Google News browser page did not redirect to the publisher"
+                else:
+                    target = final_url = browser_url
+                    item["url_resolution"] = "Google News browser redirect"
             playwright_rendered = bool(rendered)
             extracted = extract_article_html(rendered) if rendered else ""
             print(f"[article read] Playwright render and extraction · {time.perf_counter() - browser_started:.1f}s · {len(extracted)} chars", flush=True)
@@ -811,7 +893,7 @@ def article_text(item):
                 item["read_method"] = "Playwright"
         except Exception as exc:
             item["playwright_error"] = str(exc)[:180]
-    if not reddit_text and len(text) < 2500 and not playwright_rendered:
+    if not reddit_text and not blocked_reddit_page and len(text) < 2500 and not playwright_rendered and not is_google_news_url(target):
         try:
             browser_started = time.perf_counter()
             rendered = headless_browser_html(target)
@@ -823,7 +905,7 @@ def article_text(item):
         except Exception as exc:
             item["browser_error"] = str(exc)[:180]
     # Last resort for sites the local browser cannot render or parse.
-    if not reddit_text and len(text) < 2500:
+    if not reddit_text and not blocked_reddit_page and len(text) < 2500 and not is_google_news_url(target):
         try:
             reader_started = time.perf_counter()
             extracted = jina_reader_text(target)
@@ -855,6 +937,10 @@ def article_text(item):
             failures.append("Playwright could not read the page")
         if item.get("reader_error"):
             failures.append("text extraction fallback unavailable")
+        if item.get("url_resolution_error"):
+            failures.append("Google News link did not resolve to the publisher article")
+        if item.get("reddit_error"):
+            failures.append("Reddit post endpoint was blocked; used the available search excerpt")
         if not item.get("browser_error") and find_headless_browser():
             failures.append("rendered page did not expose readable article text")
         if failures:
