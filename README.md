@@ -21,11 +21,23 @@ Write a topic in **What should this paper cover?** and select **Generate edition
 - New open-weight language models that run on consumer GPUs
 - Urban gardening techniques for small balconies
 
-The server searches DuckDuckGo and Google News RSS for the subject. The search window and maximum number of articles are configurable in the settings menu. The date window is best-effort for general search results; when a source has no verifiable publication date, the paper labels it as unverified. It deduplicates results, limits repeated publishers, and retrieves article text where available. For JavaScript-heavy pages, it can render the source with headless Chromium when Chromium is installed (or set `DAILY_SIGNAL_CHROMIUM` to its executable path); it then falls back to a public text extraction service. Sources that still cannot provide readable text are labeled as feed excerpts. The model summarizes articles in parallel and then creates an aggregate overview from those summaries. Every story links to its original publisher. Search results and article text are treated as untrusted evidence; verify important claims at the source.
+The configured model plans several focused searches from the subject; the server searches DuckDuckGo, Google News RSS, and Reddit hot results for each angle. Reddit results use the hot ranking and are limited to the selected lookback window. The search window and maximum number of articles are configurable in the settings menu. The date window is best-effort for general search results; when a source has no verifiable publication date, the paper labels it as unverified. It deduplicates results, limits repeated publishers, filters relevance with the configured model, keeps Reddit results ranked by hotness within the selected time slice, and retrieves article text where available. For JavaScript-heavy pages, it can render the source with headless Chromium when Chromium is installed (or set `DAILY_SIGNAL_CHROMIUM` to its executable path); it then falls back to a public text extraction service. Sources that still cannot provide readable text are labeled as feed excerpts. The model summarizes articles in parallel and then creates an aggregate overview from those summaries. Every story links to its original publisher. Search results and article text are treated as untrusted evidence; verify important claims at the source.
 
 ## Configure the local model
 
-Open ⚙ settings to configure the LM Studio URL (for example `http://your-lm-studio-host:1234`), the loaded model name, context length, per-call output budget, articles per paper, search window, and optional API key. The default protocol is LM Studio's native REST API; the OpenAI-compatible Chat Completions option is also available. Context length must be supported by the loaded model. Settings are stored in the current browser; generation requests and source text go from the companion server to the configured model endpoint.
+Model configuration belongs to the server process; the browser never receives the model endpoint or API key and never calls the model directly. Set these environment variables before starting the app:
+
+```sh
+export DAILY_SIGNAL_LLM_ENDPOINT=http://localhost:1234
+export DAILY_SIGNAL_LLM_MODEL=qwen3.8-9b-distill
+export DAILY_SIGNAL_LLM_CONTEXT_LENGTH=131072
+export DAILY_SIGNAL_LLM_OUTPUT_TOKENS=16384
+# Optional, if your endpoint requires authentication:
+export DAILY_SIGNAL_LLM_API_KEY=your-key
+./run.sh --lan
+```
+
+The same settings are available as command-line options, such as `./run.sh --llm-endpoint http://localhost:1234/v1 --llm-model qwen3.8-9b-distill`. Use `./run.sh --help` for the full list. The backend uses OpenAI-compatible Chat Completions only; for LM Studio, enable its OpenAI-compatible server and use its `/v1` endpoint. Set the context length to a size supported by the loaded model. The browser stores only the paper prompt, article limit, and lookback window.
 
 ## Reading and saving
 
