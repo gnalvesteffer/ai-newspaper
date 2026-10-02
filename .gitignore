@@ -1,0 +1,3 @@
+# Python bytecode generated when running the server or tests.
+__pycache__/
+*.py[cod]
