@@ -82,7 +82,7 @@ The same settings are available as command-line options, such as `./run.sh --llm
 - A new browser opens ready for your topic; generation starts when you press **Generate edition** or Enter in the topic field. Refresh reconnects to an ongoing generation.
 - On phones, chat and the archive open as full-width panels. Close them with × or Escape to return to reading.
 - Select text in a paper to ask the model for a plain-English explanation. Explanations are Markdown-rendered and cached; adding one to chat is always an explicit action.
-- The chat sidebar can search the web, cites the supplied results, and compacts older conversation context when needed.
+- The chat sidebar can search the web, cites the supplied results, and compacts older conversation context when needed. Answers stream as they arrive, with incremental Markdown rendering (including tables). Research progress appears before the answer. **Stop** cancels the active reply and retains any text already received; interrupted replies are labeled. Submission smoothly scrolls to the bottom of the conversation after the composer layout updates. Once the response starts, the pane moves to its beginning and stays there while text arrives. Endpoints that return a complete JSON response instead of a stream still work, but that answer appears all at once.
 - Use **Save screenshot** to download a full-page PNG. Screenshot rendering loads html2canvas from jsDelivr, so the browser needs access to that CDN.
 
 The page uses a locally served paper-grain texture. Playwright is optional and only used to render JavaScript-heavy publisher pages.
