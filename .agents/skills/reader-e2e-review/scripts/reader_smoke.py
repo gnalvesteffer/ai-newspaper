@@ -36,8 +36,9 @@ def main():
         context = browser.new_context(viewport={'width': 1440, 'height': 1000}, reduced_motion='reduce')
         page = context.new_page()
         page.set_default_timeout(10000)
-        errors, generated, state = [], [], {'job': None, 'polls': 0}
+        errors, generated, chats, navigations, state = [], [], [], [], {'job': None, 'polls': 0}
         page.on('pageerror', lambda error: errors.append(str(error)))
+        page.on('framenavigated', lambda frame: navigations.append(frame.url) if frame == page.main_frame else None)
 
         def api(route):
             path = urlparse(route.request.url).path
@@ -61,6 +62,7 @@ def main():
             elif path == '/api/explain':
                 payload = {'explanation': ANSWER, 'sources_used': []}
             elif path == '/api/chat':
+                chats.append(route.request.post_data_json)
                 payload = {'reply': ANSWER, 'web_sources': []}
             else:
                 route.fulfill(status=400, json={'error': f'Unexpected review API: {path}'})
@@ -112,9 +114,14 @@ def main():
         assert page.locator('.chat-message').count() == 0
         page.locator('.explain-chat').click()
         assert page.locator('#chat-context').is_visible()
+        navigation_count = len(navigations)
+        page.evaluate("window.__chatDocumentToken='reader-smoke'")
         page.locator('#chat-input').fill('How should I start?')
         page.locator('#chat-input').press('Enter')
         page.wait_for_function('!document.querySelector("#chat-send").disabled')
+        assert len(chats) == 1, 'Enter did not send exactly one chat API request'
+        assert len(navigations) == navigation_count, 'Chat submission navigated the document'
+        assert page.evaluate("window.__chatDocumentToken==='reader-smoke'"), 'Chat submission reloaded the page'
         assert page.locator('.chat-markdown table').count() == 1
         page.locator('#chat-close').click()
         page.reload(wait_until='domcontentloaded')
