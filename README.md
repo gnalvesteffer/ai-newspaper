@@ -61,7 +61,9 @@ The same settings are available as command-line options, such as `./run.sh --llm
 
 ## Reading and saving
 
-- Generated papers are cached in the browser and automatically saved to the archive. Saved editions include the complete article/source context, topic, highlights, chat history, and reading preferences.
+- Generated papers are cached in the browser and automatically saved to the archive. Saved editions include the complete article/source context, topic, highlights, and chat history. Theme, font, and text size are browser-wide preferences.
+- A new browser opens ready for your topic; generation starts when you press **Generate edition** or Enter in the topic field. Refresh reconnects to an ongoing generation.
+- On phones, chat and the archive open as full-width panels. Close them with × or Escape to return to reading.
 - Select text in a paper to ask the model for a plain-English explanation. Explanations are Markdown-rendered and cached; adding one to chat is always an explicit action.
 - The chat sidebar can search the web, cites the supplied results, and compacts older conversation context when needed.
 - Use **Save screenshot** to download a full-page PNG. Screenshot rendering loads html2canvas from jsDelivr, so the browser needs access to that CDN.
@@ -70,4 +72,4 @@ The page uses a locally served paper-grain texture. Playwright is optional and o
 
 ## Agent guidance
 
-Project-specific agent skills live in `.agents/skills/`: `project-guide` covers architecture and safe changes; `run-and-debug` covers startup, LAN access, and troubleshooting.
+Project-specific agent skills live in `.agents/skills/`: `project-guide` covers architecture and safe changes; `run-and-debug` covers startup, LAN access, and troubleshooting; `reader-e2e-review` covers real browser reviews and repeatable UI regression checks.
