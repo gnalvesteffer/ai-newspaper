@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import argparse
+import os
 import re
+import shutil
 import socket
+import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -15,6 +19,7 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -512,6 +517,45 @@ def jina_reader_text(url):
     return re.sub(r"\n{3,}", "\n\n", data.decode(charset, errors="replace")).strip()
 
 
+def headless_browser_html(url):
+    """Render a JavaScript-heavy article in Chromium when it is available locally."""
+    configured = os.environ.get("DAILY_SIGNAL_CHROMIUM", "").strip()
+    browser = configured or shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+    if not browser:
+        cache = Path.home() / ".cache" / "ms-playwright"
+        candidates = sorted(cache.glob("chromium-*/chrome-linux64/chrome"), reverse=True)
+        candidates += sorted(cache.glob("chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"), reverse=True)
+        browser = next((str(path) for path in candidates if path.is_file()), "")
+    if not browser or not os.path.isfile(browser):
+        return ""
+    with tempfile.TemporaryDirectory(prefix="daily-signal-chrome-") as profile:
+        command = [browser, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                   "--disable-extensions", "--no-first-run", "--no-default-browser-check",
+                   "--disable-background-networking", "--virtual-time-budget=6000",
+                   "--user-data-dir=" + profile, "--dump-dom", url]
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=28, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"Headless Chromium could not render the page: {exc}") from exc
+        if completed.returncode and not completed.stdout.strip():
+            raise RuntimeError((completed.stderr or "Chromium exited without page HTML")[-500:])
+        return completed.stdout[:5_000_000]
+
+
+def extract_article_html(html):
+    parser = ArticleTextParser()
+    parser.feed(html)
+    text = "\n".join(parser.blocks)
+    structured = []
+    for raw in parser.jsonld:
+        try:
+            structured.extend(article_bodies(json.loads(raw)))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    structured_text = "\n".join(plain(part) for part in structured if len(plain(part)) >= 500)
+    return structured_text if len(structured_text) > len(text) else text
+
+
 def article_text(item):
     """Fetch the linked page and extract full article text when the publisher exposes it."""
     reddit = get_reddit_thread(item) if item.get("reddit") else None
@@ -531,22 +575,20 @@ def article_text(item):
                 raise
         data, content_type, final_url, charset = fetch_bytes(target, timeout=20, limit=2_000_000, accept="text/html,application/xhtml+xml,*/*")
         if "html" in content_type or data[:100].lstrip().lower().startswith((b"<!doctype html", b"<html")):
-            parser = ArticleTextParser()
-            parser.feed(data.decode(charset, errors="replace"))
-            text = "\n".join(parser.blocks)
-            structured = []
-            for raw in parser.jsonld:
-                try:
-                    structured.extend(article_bodies(json.loads(raw)))
-                except (json.JSONDecodeError, TypeError):
-                    continue
-            structured_text = "\n".join(plain(part) for part in structured if len(plain(part)) >= 500)
-            if len(structured_text) > len(text):
-                text = structured_text
+            text = extract_article_html(data.decode(charset, errors="replace"))
     except Exception as exc:
         item["read_error"] = str(exc)[:180]
-    # Retry through a text reader when the publisher uses client-side rendering,
-    # the RSS link is a redirect page, or the local extraction got only fragments.
+    # Render pages that use client-side rendering or block lightweight HTML readers.
+    if not reddit_text and len(text) < 2500:
+        try:
+            rendered = headless_browser_html(target)
+            extracted = extract_article_html(rendered) if rendered else ""
+            if len(extracted) > len(text):
+                text = extracted
+                item["read_method"] = "Headless Chromium"
+        except Exception as exc:
+            item["browser_error"] = str(exc)[:180]
+    # Last resort for sites the local browser cannot render or parse.
     if not reddit_text and len(text) < 2500:
         try:
             extracted = jina_reader_text(target)
@@ -559,7 +601,7 @@ def article_text(item):
         text = (reddit_text + "\n\nLinked article:\n" + text).strip()
         item["read_status"] = "Reddit post and discussion" if len(text) > 500 else "Reddit feed text"
     elif len(text) >= 500:
-        item["read_status"] = "Full article read" + (" · text extraction" if item.get("read_method") else "")
+        item["read_status"] = "Full article read" + (f" · {item['read_method']}" if item.get("read_method") else "")
     elif len(text) >= 180:
         item["read_status"] = "Publisher page text"
     else:
