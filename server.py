@@ -1843,6 +1843,19 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 self.send_error(404, "Paper texture is missing")
             return
+        if parsed.path == "/notification-worker.js":
+            try:
+                with open("notification-worker.js", "rb") as source:
+                    body = source.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                self.send_error(404)
+            return
         if parsed.path == "/api/current":
             from urllib.parse import parse_qs
             client_id = parse_qs(parsed.query).get("client_id", [""])[0]
