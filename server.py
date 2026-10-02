@@ -2104,20 +2104,48 @@ class Handler(BaseHTTPRequestHandler):
             def rewrite_batch(offset):
                 batch = sections[offset:offset + 4]
                 neighbors = sections[max(0, offset - 2):offset] + sections[offset + 4:offset + 5]
-                reply = call_model_json(config, [
-                    {"role": "system", "content": "/no_think\n" + instruction},
-                    {"role": "user", "content": json.dumps({"sections": batch, "neighboring_passages": neighbors}, ensure_ascii=False)},
-                ], min(int(config["outputTokens"]), 4096))
-                rows = reply.get("sections")
-                if not isinstance(rows, list) or len(rows) != len(batch):
-                    raise ValueError("The model returned an incomplete narration. Try reading again.")
+                try:
+                    reply = call_model_json(config, [
+                        {"role": "system", "content": "/no_think\n" + instruction},
+                        {"role": "user", "content": json.dumps({"sections": batch, "neighboring_passages": neighbors}, ensure_ascii=False)},
+                    ], min(int(config["outputTokens"]), 4096))
+                except InvalidModelJSONError:
+                    reply = {}
+                # Model output can omit passages, reorder them, or use numeric IDs.
+                # Preserve valid copy by ID, then rewrite only missing passages.
+                rows = reply.get("sections", []) if isinstance(reply, dict) else []
+                expected_ids = {item["id"] for item in batch}
+                by_id = {}
+                duplicate_ids = set()
+                for row in rows if isinstance(rows, list) else []:
+                    if not isinstance(row, dict):
+                        continue
+                    row_id = str(row.get("id", ""))
+                    text = row.get("text")
+                    if row_id not in expected_ids or not isinstance(text, str) or not text.strip() or len(text) > 7000:
+                        continue
+                    if row_id in by_id:
+                        duplicate_ids.add(row_id)
+                    by_id[row_id] = text.strip()
+                for row_id in duplicate_ids:
+                    by_id.pop(row_id, None)
                 rewritten = []
-                for expected, row in zip(batch, rows):
-                    if not isinstance(row, dict) or row.get("id") != expected["id"]:
-                        raise ValueError("The model changed the narration order. Try reading again.")
-                    text = str(row.get("text") or "").strip()
-                    if not text or len(text) > 7000:
-                        raise ValueError("The model returned invalid spoken copy. Try reading again.")
+                for expected in batch:
+                    text = by_id.get(expected["id"])
+                    if not text:
+                        # A single plain-text rewrite avoids repeating the fragile
+                        # multi-section JSON contract for the repair request.
+                        repair_instruction = instruction.split("Return JSON only:", 1)[0] + (
+                            "Rewrite ONLY the passage_to_read as natural spoken copy. "
+                            "Nearby passages are context only; do not narrate them. "
+                            "Return only the spoken words, without JSON, labels, or commentary."
+                        )
+                        text = call_model(config, [
+                            {"role": "system", "content": "/no_think\n" + repair_instruction},
+                            {"role": "user", "content": json.dumps({"passage_to_read": expected["text"], "neighboring_passages": neighbors + [item for item in batch if item is not expected]}, ensure_ascii=False)},
+                        ], min(int(config["outputTokens"]), 2048)).strip()
+                        if not text or len(text) > 7000:
+                            raise ValueError("Could not write spoken copy for a paper passage. Try reading again.")
                     rewritten.append({"id": expected["id"], "text": text})
                 return rewritten
             batches = list(range(0, len(sections), 4))
