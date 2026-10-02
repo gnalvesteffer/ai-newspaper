@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import argparse
 import os
+import queue
 import re
 import shutil
 import socket
@@ -13,7 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -1050,6 +1051,11 @@ def run_job(job_id, config):
             raise RuntimeError(f"No sources were returned for ‘{topic}’. Try broader wording or a longer search window.")
         update_job(job_id, stage="Reading and summarizing articles", detail=f"Opening {len(items)} source pages and queueing summaries", percent=12, total=len(items), completed=0)
         articles_by_index = {}
+        reader_queue = queue.Queue()
+        summary_queue = queue.Queue()
+        pipeline_errors = []
+        progress_lock = threading.Lock()
+        read_count = summary_count = 0
 
         def read_article(item):
             check_generation_cancelled(config)
@@ -1064,29 +1070,81 @@ def run_job(job_id, config):
 
         summary_config = dict(config)
         summary_config["_phase"] = "article summary"
+
+        def article_reader_worker():
+            nonlocal read_count
+            while True:
+                task = reader_queue.get()
+                try:
+                    if task is None:
+                        return
+                    index, source = task
+                    try:
+                        article = read_article(source)
+                        with progress_lock:
+                            read_count += 1
+                            current_read_count = read_count
+                            current_summary_count = summary_count
+                        summary_queue.put((index, article))
+                        update_job(
+                            job_id, stage="Reading and summarizing articles",
+                            detail=f"Read {current_read_count}/{len(items)} article pages · summaries continue independently",
+                            percent=12 + int(68 * current_summary_count / len(items)), completed=current_summary_count, total=len(items),
+                        )
+                    except Exception as exc:
+                        with progress_lock:
+                            pipeline_errors.append(exc)
+                finally:
+                    reader_queue.task_done()
+
+        def article_summary_worker():
+            nonlocal summary_count
+            while True:
+                task = summary_queue.get()
+                try:
+                    if task is None:
+                        return
+                    index, article = task
+                    try:
+                        summarized = summarize_one(summary_config, article, topic)
+                        with progress_lock:
+                            articles_by_index[index] = summarized
+                            summary_count += 1
+                            current_summary_count = summary_count
+                            current_read_count = read_count
+                        update_job(
+                            job_id, stage="Reading and summarizing articles",
+                            detail=f"Summarized {current_summary_count}/{len(items)} · {current_read_count} article pages read",
+                            percent=12 + int(68 * current_summary_count / len(items)),
+                            completed=current_summary_count, total=len(items),
+                        )
+                    except Exception as exc:
+                        with progress_lock:
+                            pipeline_errors.append(exc)
+                finally:
+                    summary_queue.task_done()
+
         article_started = time.perf_counter()
-        with ThreadPoolExecutor(max_workers=8) as reader_pool, ThreadPoolExecutor(max_workers=3) as model_pool:
-            pending = {reader_pool.submit(read_article, item): ("read", index) for index, item in enumerate(items)}
-            read_count = summary_count = 0
-            while pending:
-                check_generation_cancelled(config)
-                completed, _ = wait(pending, return_when=FIRST_COMPLETED)
-                for future in completed:
-                    check_generation_cancelled(config)
-                    kind, index = pending.pop(future)
-                    item = future.result()
-                    if kind == "read":
-                        read_count += 1
-                        summary_future = model_pool.submit(summarize_one, summary_config, item, topic)
-                        pending[summary_future] = ("summary", index)
-                    else:
-                        articles_by_index[index] = item
-                        summary_count += 1
-                    update_job(
-                        job_id, stage="Reading and summarizing articles",
-                        detail=f"Read {read_count}/{len(items)} article pages · summarized {summary_count}/{len(items)}",
-                        percent=12 + int(68 * summary_count / len(items)), completed=summary_count, total=len(items),
-                    )
+        for index, item in enumerate(items):
+            reader_queue.put((index, item))
+        # Both worker groups have their own work queue. Scrapers publish each
+        # readable page directly to the model queue without waiting for other pages.
+        reader_workers, summary_workers = 8, 3
+        for _ in range(reader_workers):
+            reader_queue.put(None)
+        with ThreadPoolExecutor(max_workers=reader_workers) as reader_pool, ThreadPoolExecutor(max_workers=summary_workers) as model_pool:
+            reader_futures = [reader_pool.submit(article_reader_worker) for _ in range(reader_workers)]
+            summary_futures = [model_pool.submit(article_summary_worker) for _ in range(summary_workers)]
+            reader_queue.join()
+            for future in reader_futures:
+                future.result()
+            for _ in range(summary_workers):
+                summary_queue.put(None)
+            summary_queue.join()
+            for future in summary_futures:
+                future.result()
+        if pipeline_errors:
+            raise pipeline_errors[0]
         articles = [articles_by_index[index] for index in range(len(items))]
         print(f"[generation {job_id[:8]}] article pipeline finished · {time.perf_counter() - article_started:.1f}s", flush=True)
         check_generation_cancelled(config)
