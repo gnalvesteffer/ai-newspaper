@@ -34,3 +34,7 @@ description: Use when changing, reviewing, or explaining The Daily Signal projec
 ## Source retrieval changes
 
 `article_reader.py` owns scoped HTML/JSON-LD extraction and search-link normalization. `server.py` owns source planning, public feeds/indexes, best-effort Google News publisher resolution, caching, and independent reading/summarization queues. Keep access challenges and partial articles honestly labeled; never equate page length with a full article. Custom feeds use `--source-feed` or `DAILY_SIGNAL_SOURCE_FEEDS`. Run `python3 -m unittest discover -s tests -v` when the user requests retrieval verification, and supplement mocks with bounded live reads on several publishers. Preserve publication-date uncertainty and per-browser job isolation.
+
+## Chat form regressions
+
+JavaScript syntax validation does not catch a nested callback shadowing a submit-event parameter: a hoisted declaration can make `preventDefault()` fail and allow native form navigation. Give submit events and stream callbacks distinct names. When interaction testing is authorized, use the reader-e2e-review helpers to submit through real controls and check API request counts, navigation, runtime errors, and partial streaming; simulated UI screenshots alone do not exercise that path.

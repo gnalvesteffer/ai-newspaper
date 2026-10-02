@@ -30,6 +30,23 @@ It uses isolated browser storage and intercepts `/api/*` with deterministic pape
 
 Playwright and its Chromium installation must be available in the Python environment. Use `--chromium-path` to select an existing browser executable if necessary. If Chromium shows empty text or crashes in FontConfig while computed styles and text nodes are present, verify the browser environment before diagnosing the app. A minimal temporary `FONTCONFIG_FILE` using installed font directories can isolate host font issues. Do not commit host-specific font paths or change the app's font stack to conceal that failure.
 
+## Form and streaming regressions
+
+Syntax checks and simulated screenshots do not establish that an event handler works. When the user authorizes interaction testing, submit through the actual controls: click **Send** and press Enter in the composer. Assert exactly one chat API request, an unchanged document token, no main-frame navigation, and no page errors/unhandled promise rejections. Shift+Enter and IME composition must not submit. Fixture setup may seed papers/history; calling the submit callback or inserting an answer directly is not a submission test.
+
+For streaming changes, use the local integration helper:
+
+```sh
+python3 .agents/skills/reader-e2e-review/scripts/chat_stream_smoke.py \
+  --output-dir /tmp/daily-signal-chat-stream-review
+```
+
+It starts isolated reader and fake OpenAI-compatible servers on ephemeral loopback ports, uses the real chat form/backend, and makes no external model or search requests. `--chromium-path` selects an existing browser. `--html-revision <commit>` serves an older frontend to confirm a regression is detected. Check partial content before completion, fragmented Unicode, Markdown tables, hidden reasoning, cancellation with retained text, interrupted streams, context retries without replayed text, and model-chosen browsing versus direct answers. A supplied-text explanation should skip research; the web-search-off setting must prevent tool use even when the model would otherwise search.
+
+Verify scrolling with short and long histories: submission reaches the actual pane bottom after composer layout changes. Incoming chunks follow only until the question reaches the top. Wheel, touch, scrollbar, or keyboard scrolling stops that follow behavior for the current reply. Continue receiving chunks after manual scrolling to establish that the reader's position remains stable.
+
+Run the authorized interaction checks before describing a PR as functionally verified. If only syntax or screenshot checks were performed, clearly label the changed interaction as unverified and do not treat screenshots as evidence of request/stream behavior.
+
 ## Pull request comparison screenshots
 
 When opening or updating a PR with visible reader changes, attach before-and-after screenshots to the PR description. Capture the base and proposed versions using the same paper or deterministic fixture, theme, viewport, reading size, scroll position, and interaction state. Include the views that demonstrate the changes, such as phone generation controls, tablet status text, or an open chat panel. Wait for fonts and transitions, inspect both images, and label each pair with its viewport and state.
