@@ -53,4 +53,6 @@ When opening or updating a PR with visible reader changes, attach before-and-aft
 
 Use image URLs that reviewers can access and render in the PR, with before/after images next to each other in a Markdown table. Verify the links after publishing. Local filesystem paths are not attachments. Preserve the existing PR description and state whether the comparison uses sample data. Keep browser profiles and incidental screenshots out of the feature diff; if repository hosting is needed, a dedicated screenshot artifact branch can hold the selected images.
 
+Treat screenshot artifact branches as temporary. When a PR is merged or closed and branch cleanup is requested, delete its remote screenshot branch along with its feature branch. Keep screenshot branches only for open PRs, and mention that deleting them can affect long-term availability of the image links in historical PR descriptions. Avoid leaving a separate artifact branch behind for every completed review.
+
 Report concrete findings, changes, and the limits of validation. A new skill/helper should be validated with skill-creator's validator and exercised before completion.
