@@ -90,3 +90,11 @@ The page uses a locally served paper-grain texture. Playwright is optional and o
 ## Agent guidance
 
 Project-specific agent skills live in `.agents/skills/`: `project-guide` covers architecture and safe changes; `run-and-debug` covers startup, LAN access, and troubleshooting; `reader-e2e-review` covers real browser reviews and repeatable UI regression checks.
+
+## Read aloud
+
+Use **Read aloud** in the toolbar to listen to the paper overview, themes, and article summaries in order. Click **Stop reading** to stop; click again to restart from the beginning. Highlight a passage and choose **Read selection** in its popover to listen to just that text. Starting another reading replaces the previous one, and switching editions or generating a new paper stops playback.
+
+In **Paper settings → Read aloud**, choose an available voice and use **Preview voice** to hear it before saving. The selection applies to both paper and highlighted-text playback, is saved per browser, and falls back to the device default if the voice becomes unavailable. Closing settings without saving discards the voice change.
+
+Reading uses the browser's [speech synthesis API](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis) and device voices; it does not call the configured LLM. Long papers are spoken in short chunks. The current paragraph or heading is highlighted during playback; voices that provide word boundary events also highlight the current word. Highlights clear when playback stops or finishes. Keep the page open: background or locked-screen playback depends on your browser and operating system. Unsupported browsers show disabled controls.
