@@ -2,6 +2,7 @@
 """Exercise browser voice controls with isolated storage and simulated device voices."""
 import argparse
 import json
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
@@ -110,6 +111,119 @@ def main():
         assert page.evaluate('CSS.highlights.get("speech-word").values().next().value.toString()') == 'Water'
         page.locator('.explain-read').click()
         assert page.evaluate('speechSession===null')
+
+        def read_range(start_selector, start_offset, end_selector, end_offset):
+            page.evaluate('''([startSelector,startOffset,endSelector,endOffset])=>{
+                const start=document.querySelector(startSelector).firstChild;
+                const endElement=document.querySelector(endSelector);
+                const end=endElement.lastChild.nodeType===Node.TEXT_NODE?endElement.lastChild:endElement.firstChild;
+                const range=document.createRange();range.setStart(start,startOffset);range.setEnd(end,endOffset);
+                getSelection().removeAllRanges();getSelection().addRange(range);
+                document.dispatchEvent(new Event('selectionchange'));
+            }''', [start_selector, start_offset, end_selector, end_offset])
+            page.wait_for_timeout(100)
+            page.wait_for_function('document.querySelector(".explain-quote")?.textContent===getSelection().toString().trim()')
+            page.locator('.explain-read').click()
+            return page.evaluate('utterances.at(-1).text')
+
+        # Partial heading-to-paragraph selection keeps the words and a spoken pause.
+        theme_heading = page.locator('.theme h3').first.inner_text()
+        theme_summary = page.locator('.theme p').first.inner_text()
+        selected = read_range('.theme h3', 2, '.theme p', 22)
+        assert selected == theme_heading[2:] + '\n' + theme_summary[:22], repr((theme_heading, theme_summary, selected, theme_heading[2:] + '\n' + theme_summary[:22]))
+        assert page.locator('#narration-transcript').is_hidden()
+        page.evaluate('utterances.at(-1).onstart();utterances.at(-1).onboundary({name:"word",charIndex:0,charLength:4})')
+        assert page.evaluate('CSS.highlights.get("speech-word").values().next().value.toString()') == selected[:4]
+        page.locator('.explain-read').click()
+
+        # Inline label to paragraph tail neither inserts a false pause nor shifts offsets.
+        why = page.locator('.article .why').first
+        label = why.locator('strong').inner_text()
+        tail = why.evaluate('(p)=>p.lastChild.textContent')
+        selected = read_range('.article .why strong', 4, '.article .why', 18)
+        assert selected == label[4:] + tail[:18]
+        page.evaluate('utterances.at(-1).onstart();utterances.at(-1).onboundary({name:"word",charIndex:0,charLength:7})')
+        assert page.evaluate('CSS.highlights.get("speech-word").values().next().value.toString()') == selected[:7]
+        page.locator('.explain-read').click()
+
+        # Long selections split into bounded utterances and keep word ranges accurate.
+        article_summary = page.locator('.article p:not(.why)').first
+        full_text = article_summary.inner_text()
+        selected = read_range('.article p:not(.why)', 0, '.article p:not(.why)', len(full_text))
+        assert selected == page.evaluate('speechSession.chunks[0].text')
+        chunk_texts = page.evaluate('speechSession.chunks.map(chunk=>chunk.text)')
+        assert ' '.join(re.sub(r'\s+', ' ', text).strip() for text in chunk_texts) == ' '.join(full_text.split())
+        assert page.evaluate('speechSession.chunks.length') >= 2
+        assert page.evaluate('Math.max(...speechSession.chunks.map(chunk=>chunk.text.length))') <= 220
+        page.evaluate('utterances.at(-1).onstart();utterances.at(-1).onboundary({name:"word",charIndex:0,charLength:6})')
+        assert page.evaluate('CSS.highlights.get("speech-word").values().next().value.toString()') == 'Choose'
+        previous_count = page.evaluate('utterances.length')
+        page.evaluate('utterances.at(-1).onend()')
+        assert page.evaluate('utterances.length') == previous_count + 1
+        page.evaluate('utterances.at(-1).onstart();utterances.at(-1).onboundary({name:"word",charIndex:0,charLength:5})')
+        second_chunk_word = page.evaluate('speechSession.chunks[1].text.slice(0,5)')
+        assert page.evaluate('CSS.highlights.get("speech-word").values().next().value.toString()') == second_chunk_word
+        remaining_chunks = page.evaluate('speechSession.chunks.length')
+        for _ in range(remaining_chunks + 1):
+            if page.evaluate('speechSession===null'):
+                break
+            page.evaluate('utterances.at(-1).onend()')
+        assert page.evaluate('speechSession===null')
+        assert page.evaluate('CSS.highlights.get("speech-word")===undefined')
+        assert page.locator('.explain-read').get_attribute('aria-pressed') == 'false'
+
+        # Article headline-to-summary selections keep both content and spacing.
+        headline = page.locator('.article h3').first.inner_text()
+        summary = page.locator('.article p:not(.why)').first.inner_text()
+        selected = read_range('.article h3', 3, '.article p:not(.why)', 24)
+        assert selected == headline[3:] + '\n' + summary[:24]
+        page.evaluate('utterances.at(-1).onstart();utterances.at(-1).onboundary({name:"word",charIndex:0,charLength:5})')
+        assert page.evaluate('CSS.highlights.get("speech-word").values().next().value.toString()') == selected[:5]
+        page.locator('.explain-read').click()
+
+        # Stopping long selected-text playback invalidates late speech events;
+        # pressing Read selection again starts from the original selection.
+        selected = read_range('.article p:not(.why)', 0, '.article p:not(.why)', len(full_text))
+        stale_index = page.evaluate('utterances.length-1')
+        page.evaluate('utterances.at(-1).onstart()')
+        page.locator('.explain-read').click()
+        assert page.evaluate('speechSession===null')
+        page.evaluate('(index)=>utterances[index].onend()', stale_index)
+        assert page.evaluate('speechSession===null')
+        page.locator('.explain-read').click()
+        assert page.evaluate('utterances.at(-1).text') == selected
+        page.locator('.explain-read').click()
+        assert page.evaluate('speechSession===null')
+
+        # Native speech failures stop cleanly and leave the selected passage intact.
+        selected = read_range('.theme h3', 0, '.theme h3', len(theme_heading))
+        page.evaluate('utterances.at(-1).onerror({error:"voice-unavailable"})')
+        assert page.evaluate('speechSession===null')
+        assert 'unavailable' in page.locator('#status').inner_text().lower()
+        assert page.locator('.theme h3').first.inner_text() == theme_heading
+        assert selected == theme_heading
+
+        # The selection popover and its reader control remain reachable on phone.
+        if page.locator('#settings-popover').is_visible():
+            page.locator('#settings-close').click()
+        page.set_viewport_size({'width': 390, 'height': 760})
+        page.locator('.theme h3').scroll_into_view_if_needed()
+        page.evaluate('getSelection().removeAllRanges()')
+        page.wait_for_timeout(100)
+        page.evaluate('''()=>{const range=document.createRange();range.selectNodeContents(document.querySelector('.theme h3'));getSelection().removeAllRanges();getSelection().addRange(range);document.dispatchEvent(new Event('selectionchange'))}''')
+        page.wait_for_function('document.querySelector(".explain-quote")?.textContent===getSelection().toString().trim()')
+        page.locator('#explain-popover').wait_for(state='visible')
+        popover = page.locator('#explain-popover').bounding_box()
+        assert popover['x'] >= 0 and popover['y'] >= 0
+        assert popover['x'] + popover['width'] <= 390
+        assert popover['y'] + popover['height'] <= 760
+        assert page.locator('.explain-read').is_visible()
+        assert page.locator('.explain-read').bounding_box()['height'] >= 44
+        page.screenshot(path=str(output / 'selection-popover-390.png'))
+        page.locator('.explain-read').click()
+        assert page.evaluate('utterances.at(-1).text') == theme_heading
+        page.locator('.explain-read').click()
+
         # Voice disappearance falls back safely; late voices refresh without losing the choice.
         page.locator('#settings-toggle').click()
         page.evaluate('testVoices=[];speechSynthesis.dispatchEvent(new Event("voiceschanged"))')
