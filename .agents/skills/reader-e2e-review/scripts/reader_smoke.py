@@ -15,8 +15,17 @@ PAPER = {
         'summary': 'Choose containers with drainage and plants suited to the available sunlight. ' * 5,
         'why_it_matters': 'Small spaces can support useful, accessible gardens.',
         'source_text': 'Plants in containers need drainage, regular watering, and suitable sunlight.',
-        'read_status': 'Full article read', 'link': 'https://example.com/gardening', 'date': '2026-10-01'}],
+        'read_note': 'Retrieved publisher text with a reading limitation.', 'read_status': 'Full article read', 'link': 'https://example.com/gardening', 'date': '2026-10-01'}],
     'feed_errors': []}
+# Prepared narration must match news passages, excluding retrieval diagnostics.
+_passages = ['The Daily Signal', PAPER['overview']]
+for _theme in PAPER['themes']:
+    _passages.extend([_theme['title'], _theme['summary']])
+for _article in PAPER['articles']:
+    _passages.extend([_article['headline'], _article['summary'].strip(), 'Why it matters: ' + _article['why_it_matters']])
+_sections = [{'id': str(index), 'text': text} for index, text in enumerate(_passages)]
+PAPER['narration'] = {'version': 1, 'sections': _sections,
+    'signature': json.dumps(_sections, ensure_ascii=False, separators=(',', ':'))}
 ANSWER = '**Start small.** Match plants to the sunlight available.\n\n| Step | Reason |\n| --- | --- |\n| Check drainage | Avoid waterlogging |\n| Measure sunlight | Choose suitable plants |'
 
 
@@ -69,6 +78,7 @@ def main():
                 return
             route.fulfill(json=payload)
 
+        context.add_init_script('window.reviewSpoken=[];window.speechSynthesis.speak=u=>window.reviewSpoken.push(u);window.speechSynthesis.cancel=()=>{};')
         context.route('**/api/**', api)
         page.goto(args.base_url, wait_until='domcontentloaded')
         page.wait_for_timeout(500)
@@ -82,6 +92,47 @@ def main():
         page.wait_for_function('document.querySelector(".article")')
         assert len(generated) == 1, 'Reload restarted the job'
         page.wait_for_function('document.querySelectorAll(".saved-edition-open").length === 1')
+
+        # Let generation completion finish its archive/poll bookkeeping.
+        page.wait_for_timeout(1200)
+        # Generated and archived narration starts without another model request.
+        page.locator('#read-paper').click()
+        assert page.evaluate('window.reviewSpoken.length') == 1
+        assert page.locator('#read-paper').get_attribute('aria-pressed') == 'true'
+        page.evaluate('window.reviewSpoken[0].onstart()')
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'true'
+        page.mouse.wheel(0, 100)
+        page.wait_for_function('document.querySelector("#transcript-follow").getAttribute("aria-pressed") === "false"')
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'false'
+        page.locator('#transcript-follow').click()
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'true'
+        page.keyboard.press('PageDown')
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'false'
+        page.locator('#transcript-follow').click()
+        page.evaluate('window.scrollTo(0,0)')
+        page.evaluate('''()=>{while(speechSession.chunks[speechSession.index-1].segment.element!==document.querySelector('.article h3'))window.reviewSpoken.at(-1).onend();window.reviewSpoken.at(-1).onstart()}''')
+        page.wait_for_timeout(100)
+        assert page.evaluate('scrollY') > 0, 'Narrated article did not scroll into view'
+        article_y = page.locator('.article h3').bounding_box()['y']
+        assert 0 <= article_y < page.locator('#narration-transcript').bounding_box()['y'], 'Narrated heading is obscured by the transcript'
+        page.mouse.wheel(0, -100)
+        page.wait_for_function('document.querySelector("#transcript-follow").getAttribute("aria-pressed") === "false"')
+        page.wait_for_timeout(100)
+        paused_y = page.evaluate('scrollY')
+        page.evaluate('window.reviewSpoken.at(-1).onend();window.reviewSpoken.at(-1).onstart()')
+        page.wait_for_timeout(100)
+        assert abs(page.evaluate('scrollY') - paused_y) < 2, 'Narration interrupted manual scrolling'
+        page.locator('#transcript-follow').click()
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'true'
+
+
+        page.locator('#read-paper').click()
+        page.reload(wait_until='domcontentloaded')
+        page.wait_for_function('document.querySelector(".article")')
+        page.wait_for_timeout(1200)
+        page.locator('#read-paper').click()
+        assert page.evaluate('window.reviewSpoken.length') == 1
+        page.locator('#read-paper').click()
 
         # Validation must leave the loaded paper intact.
         page.locator('#paper-topic').fill('   ')
