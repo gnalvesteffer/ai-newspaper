@@ -15,6 +15,8 @@ description: Use when changing, reviewing, or explaining The Daily Signal projec
 
 ## Data and model flow
 
+Read [the client data isolation architecture](../../../docs/client-data-isolation.md) when changing persistence, API ownership, client identity, or background tasks. Preserve browser-local durable data and client-scoped transient execution. Consumer IDs are namespace identifiers, not authenticated accounts.
+
 - The browser stores a topic prompt per browser. Story search, article retrieval, per-source summaries, and the aggregate paper run on the companion server. The configured model plans search angles; results combine general web search, Google News RSS, and Reddit hot feeds inside a configurable recency window. The browser polls server-side generation state, so reloads reconnect instead of starting a second job.
 - The browser stores paper options, the latest edition, chat history, reading preferences, and explanation cache in local storage. Full saved editions are in IndexedDB. These are per-browser; a phone has its own settings and archive.
 - The backend uses OpenAI-compatible Chat Completions for generation, explanations, and chat. Model endpoint, name, context limit, output budget, and optional API key come from server environment variables or CLI options; never pass them to the browser or include secrets in source, logs, examples, or commits.
