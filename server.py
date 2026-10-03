@@ -68,6 +68,25 @@ class GenerationCancelled(Exception):
     pass
 
 
+def require_client_id(value):
+    """Validate the browser-local namespace used for transient server state."""
+    value = str(value or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", value):
+        raise ValueError("A valid browser consumer ID is required")
+    return value
+
+
+def client_request_key(body):
+    """Never key cancellable request state by request ID alone."""
+    return require_client_id(body.get("client_id")), require_client_id(body.get("request_id"))
+
+
+def owned_job(job_id, client_id):
+    """Return only this client's job. Caller must hold JOBS_LOCK."""
+    job = JOBS.get(job_id)
+    return job if job and job.get("client_id") == client_id else None
+
+
 def configured_model():
     config = dict(MODEL_CONFIG)
     if not config.get("endpoint") or not config.get("model"):
@@ -1858,7 +1877,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/current":
             from urllib.parse import parse_qs
-            client_id = parse_qs(parsed.query).get("client_id", [""])[0]
+            try:
+                client_id = require_client_id(parse_qs(parsed.query).get("client_id", [""])[0])
+            except ValueError as exc:
+                self.send_json(400, {"error": str(exc)})
+                return
             with JOBS_LOCK:
                 latest = max((job for job in JOBS.values() if client_id and job.get("client_id") == client_id), key=lambda job: job.get("started_at", ""), default=None)
                 latest = dict(latest) if latest else None
@@ -1868,10 +1891,14 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             query = parse_qs(parsed.query)
             job_id = query.get("id", [""])[0]
-            client_id = query.get("client_id", [""])[0]
+            try:
+                client_id = require_client_id(query.get("client_id", [""])[0])
+            except ValueError as exc:
+                self.send_json(400, {"error": str(exc)})
+                return
             with JOBS_LOCK:
-                job = JOBS.get(job_id)
-                if job and job.get("client_id") == client_id:
+                job = owned_job(job_id, client_id)
+                if job:
                     job = dict(job)
                 else:
                     job = None
@@ -1924,10 +1951,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Request too large")
             body = json.loads(self.rfile.read(length))
             options = body.get("options", {})
-            client_id = str(body.get("client_id", ""))
-            if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", client_id):
-                self.send_json(400, {"error": "A valid browser consumer ID is required"})
-                return
+            client_id = require_client_id(body.get("client_id"))
             config = configured_model()
             config.update({
                 "topic": str(options.get("topic", ""))[:300],
@@ -1959,10 +1983,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Cancellation request is too large")
             body = json.loads(self.rfile.read(length))
             job_id = str(body.get("job_id", ""))
-            client_id = str(body.get("client_id", ""))
+            client_id = require_client_id(body.get("client_id"))
             with JOBS_LOCK:
-                job = JOBS.get(job_id)
-                if not job or job.get("client_id") != client_id:
+                job = owned_job(job_id, client_id)
+                if not job:
                     self.send_json(404, {"error": "Generation job not found"})
                     return
                 if job.get("status") == "running":
@@ -1985,7 +2009,7 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 1024:
                 raise ValueError("Invalid cancellation request")
             body = json.loads(self.rfile.read(length))
-            key = (str(body.get("client_id", "")), str(body.get("request_id", "")))
+            key = client_request_key(body)
             with CHAT_REQUESTS_LOCK:
                 event = CHAT_REQUESTS.get(key)
                 if event:
@@ -2041,10 +2065,7 @@ class Handler(BaseHTTPRequestHandler):
 
             streaming = body.get("stream") is True
             if streaming:
-                client_id, chat_id = str(body.get("client_id", "")), str(body.get("request_id", ""))
-                if not all(re.fullmatch(r"[A-Za-z0-9_-]{16,64}", value) for value in (client_id, chat_id)):
-                    raise ValueError("A valid chat request and browser ID are required")
-                chat_key = (client_id, chat_id)
+                chat_key = client_request_key(body)
                 with CHAT_REQUESTS_LOCK:
                     if chat_key in CHAT_REQUESTS:
                         raise ValueError("Chat request is already running")
@@ -2199,10 +2220,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def narration_request_key(body):
-        key = (str(body.get("client_id", "")), str(body.get("request_id", "")))
-        if not all(re.fullmatch(r"[A-Za-z0-9_-]{16,64}", value) for value in key):
-            raise ValueError("A valid browser and narration request ID are required")
-        return key
+        return client_request_key(body)
 
     @staticmethod
     def prune_narration_requests():
