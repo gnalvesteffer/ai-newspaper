@@ -78,7 +78,7 @@ def main():
                 return
             route.fulfill(json=payload)
 
-        context.add_init_script('window.reviewSpoken=[];window.speechSynthesis.speak=u=>window.reviewSpoken.push(u.text);window.speechSynthesis.cancel=()=>{};')
+        context.add_init_script('window.reviewSpoken=[];window.speechSynthesis.speak=u=>window.reviewSpoken.push(u);window.speechSynthesis.cancel=()=>{};')
         context.route('**/api/**', api)
         page.goto(args.base_url, wait_until='domcontentloaded')
         page.wait_for_timeout(500)
@@ -99,6 +99,33 @@ def main():
         page.locator('#read-paper').click()
         assert page.evaluate('window.reviewSpoken.length') == 1
         assert page.locator('#read-paper').get_attribute('aria-pressed') == 'true'
+        page.evaluate('window.reviewSpoken[0].onstart()')
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'true'
+        page.mouse.wheel(0, 100)
+        page.wait_for_function('document.querySelector("#transcript-follow").getAttribute("aria-pressed") === "false"')
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'false'
+        page.locator('#transcript-follow').click()
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'true'
+        page.keyboard.press('PageDown')
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'false'
+        page.locator('#transcript-follow').click()
+        page.evaluate('window.scrollTo(0,0)')
+        page.evaluate('''()=>{while(speechSession.chunks[speechSession.index-1].segment.element!==document.querySelector('.article h3'))window.reviewSpoken.at(-1).onend();window.reviewSpoken.at(-1).onstart()}''')
+        page.wait_for_timeout(100)
+        assert page.evaluate('scrollY') > 0, 'Narrated article did not scroll into view'
+        article_y = page.locator('.article h3').bounding_box()['y']
+        assert 0 <= article_y < page.locator('#narration-transcript').bounding_box()['y'], 'Narrated heading is obscured by the transcript'
+        page.mouse.wheel(0, -100)
+        page.wait_for_function('document.querySelector("#transcript-follow").getAttribute("aria-pressed") === "false"')
+        page.wait_for_timeout(100)
+        paused_y = page.evaluate('scrollY')
+        page.evaluate('window.reviewSpoken.at(-1).onend();window.reviewSpoken.at(-1).onstart()')
+        page.wait_for_timeout(100)
+        assert abs(page.evaluate('scrollY') - paused_y) < 2, 'Narration interrupted manual scrolling'
+        page.locator('#transcript-follow').click()
+        assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'true'
+
+
         page.locator('#read-paper').click()
         page.reload(wait_until='domcontentloaded')
         page.wait_for_function('document.querySelector(".article")')
