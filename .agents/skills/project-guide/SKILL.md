@@ -41,6 +41,21 @@ Read [the client data isolation architecture](../../../docs/client-data-isolatio
 
 JavaScript syntax validation does not catch a nested callback shadowing a submit-event parameter: a hoisted declaration can make `preventDefault()` fail and allow native form navigation. Give submit events and stream callbacks distinct names. When interaction testing is authorized, use the reader-e2e-review helpers to submit through real controls and check API request counts, navigation, runtime errors, and partial streaming; simulated UI screenshots alone do not exercise that path.
 
+## Specialist review skills
+
+Use the focused review skill when its concern is central to the task:
+
+- [Source quality](../source-quality-review/SKILL.md) for relevance, evidence fidelity, dates, and publisher diversity.
+- [Generation pipeline](../generation-pipeline-review/SKILL.md) for search yield, queues, filtering, and article-count shortfalls.
+- [Accessibility](../accessibility-review/SKILL.md) for keyboard, assistive technology, contrast, reflow, and touch use.
+- [Privacy and security](../privacy-security-review/SKILL.md) for client isolation, credentials, untrusted content, and LAN exposure.
+- [Narration quality](../narration-quality-review/SKILL.md) for spoken scripts, text mapping, voice controls, and transcript usability.
+- [Release and migration](../release-migration-review/SKILL.md) for compatibility, persistence migrations, startup, and setup documentation.
+- [Visual regression](../visual-regression-review/SKILL.md) for matched screenshots across themes, viewports, and reading sizes.
+- [Incident diagnostics](../incident-diagnostics-review/SKILL.md) for stage-specific failures, progress, cancellation, recovery, and safe logs.
+
+These are focused workflows, not a requirement to run every review on every change. Use `product-review-team` when the user asks for a multidisciplinary review.
+
 ## Pull requests
 
 When opening or changing a PR, follow reader-e2e-review’s independent subagent review and fix loop before publishing each update, including fixes and documentation changes. Address findings and obtain another review after fixes. Follow its screenshot attachment and temporary branch cleanup guidance for visible changes.
