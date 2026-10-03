@@ -5,7 +5,7 @@ description: Critique and improve The Daily Signal as a product manager and inte
 
 # Reader product and design review
 
-Use for open-ended product critique or feature improvements. Keep narrow bug fixes narrow unless the user asks for a broader review. Read the project-guide for architecture and reader-e2e-review for authorized browser checks, independent PR review, and comparison screenshots.
+Use for open-ended product critique or feature improvements. When the user requests a multidisciplinary specialist team, use `product-review-team` to coordinate the roles and implementation loop. Keep narrow bug fixes narrow unless the user asks for a broader review. Read the project-guide for architecture and reader-e2e-review for authorized browser checks, independent PR review, and comparison screenshots.
 
 ## Start with the reader's job
 

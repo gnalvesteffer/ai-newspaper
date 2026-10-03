@@ -47,6 +47,6 @@ When opening or changing a PR, follow reader-e2e-review’s independent subagent
 
 ## Product reviews and ownership
 
-For requested product/design critique, use `product-design-review` to prioritize changes around observed reader goals and validate usability with screenshots and real interactions.
+For a requested multidisciplinary review team, use `product-review-team` and its specialist role briefs. For requested product/design critique, use `product-design-review` to prioritize changes around observed reader goals and validate usability with screenshots and real interactions.
 
 The project is proprietary under `LICENSE`. Read `CONTRIBUTING.md` before accepting outside contributions: Gavin Alvesteffer must verify a signed assignment identifying the contribution before merge. Repository visibility, PR submission, and a checkbox do not themselves transfer ownership; retain third-party rights and terms. Do not commit private signed agreements.
