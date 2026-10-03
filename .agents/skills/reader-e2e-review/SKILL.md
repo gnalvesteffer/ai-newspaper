@@ -17,6 +17,12 @@ Capture desktop, tablet, and phone layouts (for example 1440, 768, 390, and 320 
 
 Collect page errors and failed app requests. Check horizontal overflow, clipped controls, touch target sizes, keyboard Escape/focus return, and whether the question and response remain navigable in a long chat. Verify explanations stay scoped to their edition and don't enter chat without an explicit action.
 
+## Article yield and reader expectations
+
+When reviewing generation, include a broad news request, a comma-separated list of independent interests, a long request with editorial boundaries, and a narrow local topic. Use the same model/options for before-and-after runs. Compare requested articles with accepted output, not raw search matches: repeated index hits, rejected stories, old publisher dates, failed evidence checks, and resolved duplicate URLs can all reduce yield. Check `research_coverage` and the generation log to identify where the reduction occurs. Verify reserves replace rejected articles, reading stops at the accepted target, and bounded follow-up searches preserve geographic and date restrictions. Scarce topics should show an honest shortfall, not unrelated filler.
+
+Use deterministic pipeline tests to cover a 100-article quota with rejected slots, a late model failure after partial acceptance, cancellation, and planned location scope reaching summary workers. Mocked UI results cannot prove ingestion yield. For live reviews, bound the requests and record elapsed time, accepted counts, retrieval coverage, runtime errors, and network limitations. Review wording as a news reader: implementation details belong in setup documentation or expandable reading details, not headline controls.
+
 ## Repeatable UI regression pass
 
 Run the bundled script against the running app:

@@ -104,7 +104,7 @@ class SourceTests(unittest.TestCase):
     def test_fulltext_relevance_requires_literal_evidence(self):
         row = {'title': 'Study', 'publisher': 'Publisher', 'published': '', 'feed': 'RSS', 'read_status': 'Full article read', 'article_url': 'https://publisher.test/story', 'article_text': BODY}
         for evidence, expected in [('Invented geographic connection', 0), (BODY[:40], 1)]:
-            response = {'summaries': [{'id': '0', 'relevant': True, 'relevance_evidence': evidence, 'headline': 'Study'}]}
+            response = {'summaries': [{'id': '0', 'relevant': True, 'relevance_evidence': evidence, 'headline': 'Study', 'summary': 'Researchers report safer battery chemistry.'}]}
             with patch.object(server, 'call_model_json', return_value=response):
                 result = server.summarize_batch({}, [(0, dict(row))], 'batteries')
             self.assertEqual(len(result), expected)
@@ -128,16 +128,16 @@ class ResearchRoundTests(unittest.TestCase):
     def test_bounded_followup_uses_model_queries(self):
         current = datetime.now(timezone.utc).isoformat()
         row = {'title': 'New battery chemistry', 'link': 'https://publisher.test/story', 'publisher': 'Publisher', 'published': current, 'excerpt': BODY, 'weight': 5}
-        plans = [{'queries': ['battery durability study', 'battery recycling research']}]
+        plans = [{'queries': ['battery durability study', 'battery recycling research']}, {'queries': []}]
         seen_queries = []
         def news(query, *args, **kwargs):
             seen_queries.append(query)
-            return [dict(row)]
-        with patch.object(server, 'plan_topic_searches', return_value=(['batteries'], '')), patch.object(server, 'search_web', return_value=[]), patch.object(server, 'read_feed', return_value=[]), patch.object(server, 'reddit_hot_search', return_value=[]), patch.object(server, 'discover_publisher_feeds', return_value=[]), patch.object(server, 'bing_search', side_effect=news), patch.object(server, 'filter_relevant_sources', side_effect=[[], [row]]), patch.object(server, 'call_model_json', side_effect=plans) as model:
+            return [] if query.startswith('batteries ') else [dict(row)]
+        with patch.object(server, 'plan_topic_searches', return_value=(['batteries'], '')), patch.object(server, 'search_web', return_value=[]), patch.object(server, 'read_feed', return_value=[]), patch.object(server, 'reddit_hot_search', return_value=[]), patch.object(server, 'discover_publisher_feeds', return_value=[]), patch.object(server, 'bing_search', side_effect=news), patch.object(server, 'filter_relevant_sources', return_value=[row]), patch.object(server, 'call_model_json', side_effect=plans) as model:
             selected, errors = server.collect_topic_sources({}, 'test', 'batteries', 5, 7)
         self.assertEqual(selected, [row])
         self.assertEqual(errors, [])
-        self.assertEqual(model.call_count, 1)
+        self.assertEqual(model.call_count, 2)
         self.assertTrue(any(query.startswith('battery recycling research') for query in seen_queries))
 
     def test_stale_sources_excluded_before_filtering(self):
