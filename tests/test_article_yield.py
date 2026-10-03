@@ -26,6 +26,24 @@ class ArticleYieldTests(unittest.TestCase):
         self.assertIn('Do not guess counties', model.call_args.args[1][0]['content'])
         self.assertIn('target of 100 articles', model.call_args.args[1][1]['content'])
 
+    def test_prompt_styles_reach_planner_without_punctuation_splitting(self):
+        prompts=[
+            'property taxes in Killeen, Texas',
+            'AI local LLMs software development best practices',
+            'Please find news about battery storage for electric vehicles, focusing on household costs.',
+        ]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                with patch.object(server,'call_model_json',return_value={'queries':['focused query']}) as model:
+                    queries,_=server.plan_topic_searches({'articleCount':8},prompt,14)
+                self.assertEqual(queries[0],prompt)
+                self.assertIn(json.dumps(prompt),model.call_args.args[1][1]['content'])
+                instructions=model.call_args.args[1][0]['content']
+                self.assertIn('NOT topic delimiters',instructions)
+                self.assertIn('Killeen, Texas is one location',instructions)
+                self.assertIn('keywords',instructions)
+                self.assertIn('natural language',instructions)
+
     def test_reserve_candidates_replace_rejected_slots(self):
         rows = [story(i) for i in range(6)]
         calls = []
