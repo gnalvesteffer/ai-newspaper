@@ -232,7 +232,7 @@ function startReading(segments,kind,selectedVoice=savedVoice()){
  try{window.speechSynthesis.speak(utterance)}catch{stopReading();document.getElementById('status').textContent='Could not start read aloud'}
  };speakNext();
 }
-function paperNarrationSections(){return [...document.querySelectorAll('.masthead h1,#overview,.theme h3,.theme p,.article h3,.article p')].filter(element=>element.textContent.trim()).map((element,index)=>({id:String(index),text:element.textContent.trim(),element}))}
+function paperNarrationSections(){return [...document.querySelectorAll('.masthead h1,#overview,.theme h3,.theme p,.article h3,.article > p')].filter(element=>element.textContent.trim()).map((element,index)=>({id:String(index),text:element.textContent.trim(),element}))}
 function validNarration(script,sections){return script?.version===1&&Array.isArray(script.sections)&&script.sections.length===sections.length&&script.sections.every((row,index)=>row?.id===sections[index].id&&typeof row.text==='string'&&row.text.trim())}
 async function readPaper(){
  if(speechSession||narrationRequest){stopReading();return}if(!currentEdition||!speechAvailable)return;
