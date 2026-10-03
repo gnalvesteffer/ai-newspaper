@@ -78,7 +78,7 @@ def main():
                 return
             route.fulfill(json=payload)
 
-        context.add_init_script('window.reviewSpoken=[];window.speechSynthesis.speak=u=>window.reviewSpoken.push(u);window.speechSynthesis.cancel=()=>{};')
+        context.add_init_script('window.reviewSpoken=[];window.speechSynthesis.speak=u=>window.reviewSpoken.push(u);window.speechSynthesis.cancel=()=>{};window.reviewPause=0;window.reviewResume=0;window.speechSynthesis.pause=()=>reviewPause++;window.speechSynthesis.resume=()=>reviewResume++;')
         context.route('**/api/**', api)
         page.goto(args.base_url, wait_until='domcontentloaded')
         page.wait_for_timeout(500)
@@ -100,6 +100,29 @@ def main():
         assert page.evaluate('window.reviewSpoken.length') == 1
         assert page.locator('#read-paper').get_attribute('aria-pressed') == 'true'
         page.evaluate('window.reviewSpoken[0].onstart()')
+        assert page.locator('#transcript-previous').is_disabled()
+        page.locator('#transcript-pause').click()
+        assert page.locator('#transcript-pause').inner_text() == 'Resume'
+        assert page.evaluate('window.reviewPause') == 1
+        page.locator('#transcript-pause').click()
+        assert page.evaluate('window.reviewResume') == 2
+        page.locator('#transcript-next').click()
+        page.evaluate('window.reviewSpoken.at(-1).onstart()')
+        assert page.locator('#transcript-previous').is_enabled()
+        page.locator('#transcript-previous').click()
+        page.evaluate('window.reviewSpoken.at(-1).onstart()')
+        assert page.locator('#transcript-previous').is_disabled()
+        page.evaluate('window.staleUtterance=window.reviewSpoken.at(-1)')
+        page.evaluate('window.reviewSpoken.at(-1).onboundary({name:"word",charIndex:4,charLength:5})')
+        page.locator('#transcript-speed').select_option('1.5')
+        assert page.evaluate('window.reviewSpoken.at(-1).rate') == 1.5
+        assert page.evaluate('window.reviewSpoken.at(-1).text') == 'Daily Signal'
+        count = page.evaluate('window.reviewSpoken.length')
+        page.evaluate('window.staleUtterance.onend();window.staleUtterance.onerror({error:"interrupted"})')
+        assert page.evaluate('window.reviewSpoken.length') == count
+        assert page.locator('#read-paper').get_attribute('aria-pressed') == 'true'
+        page.evaluate('window.reviewSpoken.at(-1).onstart()')
+
         assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'true'
         page.mouse.wheel(0, 100)
         page.wait_for_function('document.querySelector("#transcript-follow").getAttribute("aria-pressed") === "false"')
@@ -124,14 +147,23 @@ def main():
         assert abs(page.evaluate('scrollY') - paused_y) < 2, 'Narration interrupted manual scrolling'
         page.locator('#transcript-follow').click()
         assert page.locator('#transcript-follow').get_attribute('aria-pressed') == 'true'
-
-
+        # Speed changed while paused takes effect on explicit resumption.
+        page.locator('#transcript-pause').click()
+        paused_count = page.evaluate('window.reviewSpoken.length')
+        page.locator('#transcript-speed').select_option('2')
+        assert page.evaluate('window.reviewSpoken.length') == paused_count
+        page.locator('#transcript-pause').click()
+        assert page.evaluate('window.reviewSpoken.at(-1).rate') == 2
+        page.locator('#transcript-speed').select_option('1.5')
+        page.locator('#transcript-pause').click()
+        # Stop while paused, then restart via the main button after reload.
         page.locator('#read-paper').click()
         page.reload(wait_until='domcontentloaded')
         page.wait_for_function('document.querySelector(".article")')
         page.wait_for_timeout(1200)
         page.locator('#read-paper').click()
         assert page.evaluate('window.reviewSpoken.length') == 1
+        assert page.evaluate('window.reviewSpoken[0].rate') == 1.5
         page.locator('#read-paper').click()
 
         # Validation must leave the loaded paper intact.

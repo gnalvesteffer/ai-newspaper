@@ -53,6 +53,10 @@ Verify scrolling with short and long histories: submission reaches the actual pa
 
 Run the authorized interaction checks before describing a PR as functionally verified. If only syntax or screenshot checks were performed, clearly label the changed interaction as unverified and do not treat screenshots as evidence of request/stream behavior.
 
+## Read-aloud controls
+
+When changing listening behavior, exercise the real player controls with prepared narration and no extra narration request. Verify pause/resume, section navigation across multi-chunk paragraphs, browser-wide speed persistence, cancelled-utterance callbacks after skips, and restart after stopping while paused. Advance mocked utterance callbacks to below-fold sections; assert following moves the page, manual scrolling stops later movement, and resuming returns to the current section. Inspect the drawer on short phone viewports as well as desktop. Keep touch targets usable without hiding most of the news. Simulated speech proves player state and UI behavior; report real voice/device timing as unverified unless actually checked.
+
 ## Independent PR review loop
 
 For every new PR and every subsequent change to that PR (including fixes and documentation), obtain an independent review from a subagent before publishing the update. Give the reviewer the base branch, current diff, user requirements, and relevant project guidance; have it inspect correctness, persistence, cancellation, security, responsive behavior, and validation gaps as applicable. Provide the comparison images and relevant validation results as well as code. Ask for a critical reader/product review: discoverability, wording, clutter, mobile space, trust, and whether the evidence demonstrates the user's requested outcome. The reviewer should inspect the images, not infer usability solely from CSS or passing tests. State any unavailable runtime or image checks explicitly. The reviewer must review independently rather than implement the change it reviews. Respect the user's testing authorization; review does not itself authorize adding or running tests.

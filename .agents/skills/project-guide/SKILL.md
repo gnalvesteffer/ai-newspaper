@@ -44,3 +44,9 @@ JavaScript syntax validation does not catch a nested callback shadowing a submit
 ## Pull requests
 
 When opening or changing a PR, follow reader-e2e-review’s independent subagent review and fix loop before publishing each update, including fixes and documentation changes. Address findings and obtain another review after fixes. Follow its screenshot attachment and temporary branch cleanup guidance for visible changes.
+
+## Product reviews and ownership
+
+For requested product/design critique, use `product-design-review` to prioritize changes around observed reader goals and validate usability with screenshots and real interactions.
+
+The project is proprietary under `LICENSE`. Read `CONTRIBUTING.md` before accepting outside contributions: Gavin Alvesteffer must verify a signed assignment identifying the contribution before merge. Repository visibility, PR submission, and a checkbox do not themselves transfer ownership; retain third-party rights and terms. Do not commit private signed agreements.
