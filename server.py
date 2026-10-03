@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import json
 import argparse
+import asyncio
 import base64
 import binascii
+import http.client
 import os
 import queue
 import re
 import shutil
+import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -24,9 +28,8 @@ from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address
 from pathlib import Path
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse, urljoin, parse_qs
-from urllib.request import Request, urlopen
+from urllib.request import HTTPHandler, HTTPSHandler, Request, build_opener
 from xml.etree import ElementTree as ET
 
 from chat_stream import completion_events
@@ -58,6 +61,15 @@ ARTICLE_BROWSER_LOCAL = threading.local()
 JOBS: dict[str, dict] = {}
 JOB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 JOBS_LOCK = threading.Lock()
+MODEL_CONNECTIONS: dict[threading.Event, set] = {}
+MODEL_CONNECTIONS_LOCK = threading.Lock()
+SOURCE_CANCEL_LOCAL = threading.local()
+SOURCE_CONNECTIONS: dict[threading.Event, set] = {}
+SOURCE_CONNECTIONS_LOCK = threading.Lock()
+SOURCE_PROCESSES: dict[threading.Event, set] = {}
+SOURCE_PROCESSES_LOCK = threading.Lock()
+SOURCE_BROWSER_PAGES: dict[threading.Event, set] = {}
+SOURCE_BROWSER_PAGES_LOCK = threading.Lock()
 MODEL_CONFIG: dict[str, object] = {}
 CHAT_REQUESTS = {}
 CHAT_REQUESTS_LOCK = threading.Lock()
@@ -67,6 +79,42 @@ NARRATION_REQUESTS_LOCK = threading.Lock()
 
 class GenerationCancelled(Exception):
     pass
+
+
+def cancellable_getaddrinfo(host, port, event, family=0, type=0, proto=0, flags=0, timeout=20):
+    """Resolve in a disposable process so a stalled system resolver cannot exhaust workers."""
+    helper = (
+        "import json,socket,sys; "
+        "a=socket.getaddrinfo(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), "
+        "int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6])); "
+        "print(json.dumps(a))"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", helper, str(host), str(port), str(family), str(type), str(proto), str(flags)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if event and event.is_set():
+                raise GenerationCancelled("Generation cancelled by the user.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.gaierror("DNS lookup timed out")
+            try:
+                stdout, stderr = process.communicate(timeout=min(.1, remaining))
+                if process.returncode:
+                    raise socket.gaierror(stderr.strip() or "DNS lookup failed")
+                return [tuple([item[0], item[1], item[2], item[3], tuple(item[4])]) for item in json.loads(stdout)]
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def require_client_id(value):
@@ -128,7 +176,189 @@ def update_job(job_id, **values):
 def check_generation_cancelled(config):
     event = config.get("_cancel_event") if isinstance(config, dict) else None
     if event and event.is_set():
+        interrupt_model_requests(event)
+        interrupt_source_requests(event)
         raise GenerationCancelled("Generation cancelled by the user.")
+
+
+class CancellableConnectionMixin:
+    """Let cancellation close an in-flight OpenAI-compatible HTTP request."""
+    cancel_event = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = self._create_cancellable_socket
+
+    def _create_cancellable_socket(self, address, timeout, source_address):
+        """Publish the socket before connect so another thread can interrupt connect()."""
+        if self.cancel_event and self.cancel_event.is_set():
+            raise GenerationCancelled("Generation cancelled by the user.")
+        err = None
+        address_info = cancellable_getaddrinfo(address[0], address[1], self.cancel_event, type=socket.SOCK_STREAM) if self.cancel_event else socket.getaddrinfo(*address, 0, socket.SOCK_STREAM)
+        for family, socktype, proto, _canonname, sockaddr in address_info:
+            sock = socket.socket(family, socktype, proto)
+            self.sock = sock
+            try:
+                if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                    sock.settimeout(timeout)
+                if source_address:
+                    sock.bind(source_address)
+                sock.connect(sockaddr)
+                if self.cancel_event and self.cancel_event.is_set():
+                    raise GenerationCancelled("Generation cancelled by the user.")
+                return sock
+            except GenerationCancelled:
+                sock.close()
+                self.sock = None
+                raise
+            except OSError as exc:
+                err = exc
+                sock.close()
+                self.sock = None
+                if self.cancel_event and self.cancel_event.is_set():
+                    raise GenerationCancelled("Generation cancelled by the user.") from exc
+        if err:
+            raise err
+        raise OSError("No address found for model endpoint")
+
+    def connect(self):
+        if self.cancel_event and self.cancel_event.is_set():
+            raise GenerationCancelled("Generation cancelled by the user.")
+        super().connect()
+        if self.cancel_event and self.cancel_event.is_set():
+            self.close()
+            raise GenerationCancelled("Generation cancelled by the user.")
+
+
+class CancellableHTTPConnection(CancellableConnectionMixin, http.client.HTTPConnection):
+    pass
+
+
+class CancellableHTTPSConnection(CancellableConnectionMixin, http.client.HTTPSConnection):
+    pass
+
+
+def register_model_connection(event, connection):
+    if not event:
+        return
+    with MODEL_CONNECTIONS_LOCK:
+        if event.is_set():
+            raise GenerationCancelled("Generation cancelled by the user.")
+        MODEL_CONNECTIONS.setdefault(event, set()).add(connection)
+        connection.cancel_event = event
+
+
+def unregister_model_connection(event, connection):
+    if event:
+        with MODEL_CONNECTIONS_LOCK:
+            connections = MODEL_CONNECTIONS.get(event)
+            if connections:
+                connections.discard(connection)
+                if not connections:
+                    MODEL_CONNECTIONS.pop(event, None)
+    connection.close()
+
+
+def interrupt_model_requests(event):
+    """Close upstream model sockets for a cancelled job/request."""
+    if not event:
+        return
+    with MODEL_CONNECTIONS_LOCK:
+        connections = MODEL_CONNECTIONS.pop(event, set())
+    for connection in connections:
+        try:
+            active_socket = getattr(connection, "sock", None)
+            if active_socket:
+                try:
+                    active_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            connection.close()
+        except OSError:
+            pass
+
+
+def communicate_with_timeout(process, timeout, cancel_event=None):
+    """Drain a subprocess's stdout and stderr while remaining cancellable."""
+    deadline = time.monotonic() + timeout
+    while True:
+        check_generation_cancelled({"_cancel_event": cancel_event})
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        try:
+            return process.communicate(timeout=min(.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def register_source_connection(event, connection):
+    if not event:
+        return
+    with SOURCE_CONNECTIONS_LOCK:
+        if event.is_set():
+            raise GenerationCancelled("Generation cancelled by the user.")
+        SOURCE_CONNECTIONS.setdefault(event, set()).add(connection)
+
+
+def unregister_source_connection(event, connection):
+    if not event:
+        return
+    with SOURCE_CONNECTIONS_LOCK:
+        active = SOURCE_CONNECTIONS.get(event)
+        if active:
+            active.discard(connection)
+            if not active:
+                SOURCE_CONNECTIONS.pop(event, None)
+
+
+def interrupt_source_requests(event):
+    """Stop active search/article HTTP requests, browser pages, and processes."""
+    if not event:
+        return
+    with SOURCE_CONNECTIONS_LOCK:
+        connections = SOURCE_CONNECTIONS.pop(event, set())
+    for active_socket in connections:
+        try:
+            try:
+                active_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            active_socket.close()
+        except OSError:
+            pass
+    with SOURCE_BROWSER_PAGES_LOCK:
+        pages = SOURCE_BROWSER_PAGES.pop(event, set())
+    for page in pages:
+        try:
+            implementation = page._impl_obj
+            loop = implementation._connection._loop
+            asyncio.run_coroutine_threadsafe(implementation.close(), loop)
+        except Exception:
+            # The owning Playwright call will hit its navigation timeout if the
+            # page has already disappeared or its event loop is stopping.
+            pass
+    with SOURCE_PROCESSES_LOCK:
+        processes = SOURCE_PROCESSES.pop(event, set())
+    for process in processes:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+
+def run_with_source_cancellation(event, function, *args, **kwargs):
+    previous = getattr(SOURCE_CANCEL_LOCAL, "event", None)
+    SOURCE_CANCEL_LOCAL.event = event
+    try:
+        check_generation_cancelled({"_cancel_event": event})
+        return function(*args, **kwargs)
+    finally:
+        SOURCE_CANCEL_LOCAL.event = previous
 
 
 def local_name(tag):
@@ -195,10 +425,130 @@ def parse_date(value):
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def fetch_bytes(url, timeout=18, limit=2_000_000, accept="application/rss+xml, application/atom+xml, text/xml, text/html, application/json, */*"):
+def cancellable_source_opener(event):
+    connections = set()
+
+    class SourceConnectionMixin:
+        def __init__(self, *args, **kwargs):
+            self.source_event = event
+            self.source_registered = False
+            self.source_socket = None
+            super().__init__(*args, **kwargs)
+            self._create_connection = self._create_source_socket
+            connections.add(self)
+
+        def _create_source_socket(self, address, timeout, source_address):
+            if self.source_event and self.source_event.is_set():
+                raise GenerationCancelled("Generation cancelled by the user.")
+            err = None
+            address_info = cancellable_getaddrinfo(address[0], address[1], self.source_event, type=socket.SOCK_STREAM) if self.source_event else socket.getaddrinfo(*address, 0, socket.SOCK_STREAM)
+            for family, socktype, proto, _canonname, sockaddr in address_info:
+                active_socket = socket.socket(family, socktype, proto)
+                self.sock = active_socket
+                self.source_socket = active_socket
+                try:
+                    if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                        active_socket.settimeout(timeout)
+                    if source_address:
+                        active_socket.bind(source_address)
+                    register_source_connection(self.source_event, active_socket)
+                    self.source_registered = bool(self.source_event)
+                    active_socket.connect(sockaddr)
+                    if self.source_event and self.source_event.is_set():
+                        raise GenerationCancelled("Generation cancelled by the user.")
+                    return active_socket
+                except GenerationCancelled:
+                    self.close()
+                    raise
+                except OSError as exc:
+                    err = exc
+                    self.close()
+                    if self.source_event and self.source_event.is_set():
+                        raise GenerationCancelled("Generation cancelled by the user.") from exc
+            if err:
+                raise err
+            raise OSError("No address found for source URL")
+
+        def connect(self):
+            check_generation_cancelled({"_cancel_event": self.source_event})
+            super().connect()
+            if self.source_event and self.source_event.is_set():
+                self.close()
+                raise GenerationCancelled("Generation cancelled by the user.")
+            self.source_socket = self.sock
+
+        def close(self):
+            if self.source_registered:
+                self.source_registered = False
+                unregister_source_connection(self.source_event, self.source_socket)
+            super().close()
+
+    class SourceHTTPConnection(SourceConnectionMixin, http.client.HTTPConnection):
+        pass
+
+    class SourceHTTPSConnection(SourceConnectionMixin, http.client.HTTPSConnection):
+        pass
+
+    class SourceHTTPHandler(HTTPHandler):
+        def http_open(self, request):
+            return self.do_open(SourceHTTPConnection, request)
+
+    class SourceHTTPSHandler(HTTPSHandler):
+        def https_open(self, request):
+            return self.do_open(SourceHTTPSConnection, request)
+
+    return build_opener(SourceHTTPHandler(), SourceHTTPSHandler()), connections
+
+
+class CancellableSourceResponse:
+    """Close registered sockets after urllib has finished reading the response."""
+    def __init__(self, response, connections):
+        self.response = response
+        self.connections = connections
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            self.response.close()
+        finally:
+            for connection in self.connections:
+                connection.close()
+            self.connections.clear()
+
+    def __getattr__(self, name):
+        return getattr(self.response, name)
+
+
+def open_source_url(request, timeout):
+    event = getattr(SOURCE_CANCEL_LOCAL, "event", None)
+    if event:
+        check_generation_cancelled({"_cancel_event": event})
+    opener, connections = cancellable_source_opener(event)
+    try:
+        response = opener.open(request, timeout=timeout)
+        return CancellableSourceResponse(response, connections)
+    except Exception:
+        for connection in connections:
+            connection.close()
+        connections.clear()
+        raise
+
+
+def fetch_bytes(url, timeout=18, limit=2_000_000, accept="application/rss+xml, application/atom+xml, text/html, application/json, */*"):
+    event = getattr(SOURCE_CANCEL_LOCAL, "event", None)
     request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
-    with urlopen(request, timeout=timeout) as response:
-        return response.read(limit), response.headers.get_content_type(), response.geturl(), response.headers.get_content_charset() or "utf-8"
+    try:
+        with open_source_url(request, timeout=timeout) as response:
+            data = response.read(limit)
+            if event:
+                check_generation_cancelled({"_cancel_event": event})
+            return data, response.headers.get_content_type(), response.geturl(), response.headers.get_content_charset() or "utf-8"
+    except Exception as exc:
+        if event and event.is_set():
+            raise GenerationCancelled("Generation cancelled by the user.") from exc
+        raise
 
 
 def cached_source(key, loader, ttl=300):
@@ -420,7 +770,7 @@ def hacker_news_search(query, days, limit=20):
     return rows
 
 
-def discover_publisher_feeds(items, limit=5):
+def discover_publisher_feeds(items, limit=5, cancel_event=None):
     homes = []
     for item in items:
         home = item.get("publisher_url", "")
@@ -446,8 +796,10 @@ def discover_publisher_feeds(items, limit=5):
             return []
     feeds = []
     with ThreadPoolExecutor(max_workers=5) as pool:
-        for links in pool.map(discover, homes):
-            for link in links:
+        futures = [pool.submit(run_with_source_cancellation, cancel_event, discover, home) for home in homes]
+        for future in as_completed(futures):
+            check_generation_cancelled({"_cancel_event": cancel_event})
+            for link in future.result():
                 if link not in feeds:
                     feeds.append(link)
     return feeds[:8]
@@ -695,13 +1047,13 @@ def collect_topic_sources(config, job_id, topic, limit=8, days=7, consume_source
         with ThreadPoolExecutor(max_workers=18) as pool:
             def submit_query(query):
                 tasks.extend([
-                    (query, "web", pool.submit(search_web, f"{query} after:{after}", max(12, min(limit, 25)))),
-                    (query, "bing-news", pool.submit(bing_search, f"{query} after:{after}", max(12, min(limit, 50)), True)),
-                    (query, "news", pool.submit(read_feed, {"name": f"Google News · {query[:55]}", "query": query, "days": days, "weight": 5})),
-                    (query, "reddit", pool.submit(reddit_hot_search, query, days, max(12, min(limit, 25)))),
+                    (query, "web", pool.submit(run_with_source_cancellation, config.get("_cancel_event"), search_web, f"{query} after:{after}", max(12, min(limit, 25)))),
+                    (query, "bing-news", pool.submit(run_with_source_cancellation, config.get("_cancel_event"), bing_search, f"{query} after:{after}", max(12, min(limit, 50)), True)),
+                    (query, "news", pool.submit(run_with_source_cancellation, config.get("_cancel_event"), read_feed, {"name": f"Google News · {query[:55]}", "query": query, "days": days, "weight": 5})),
+                    (query, "reddit", pool.submit(run_with_source_cancellation, config.get("_cancel_event"), reddit_hot_search, query, days, max(12, min(limit, 25)))),
                 ])
             if initial:
-                planning_future = pool.submit(plan_topic_searches, config, topic, days)
+                planning_future = pool.submit(run_with_source_cancellation, config.get("_cancel_event"), plan_topic_searches, config, topic, days)
                 submit_query(topic)
                 queries, planning_note = planning_future.result()
                 if planning_note:
@@ -711,12 +1063,12 @@ def collect_topic_sources(config, job_id, topic, limit=8, days=7, consume_source
                         submit_query(query)
                 for key in config.get("_planned_feeds", []):
                     name, url, _ = SOURCE_FEEDS[key]
-                    tasks.append((name, "publisher-feed", pool.submit(read_feed, {"name": name, "url": url, "weight": 6})))
+                    tasks.append((name, "publisher-feed", pool.submit(run_with_source_cancellation, config.get("_cancel_event"), read_feed, {"name": name, "url": url, "weight": 6})))
                 for url in config.get("sourceFeeds", []):
-                    tasks.append((url, "publisher-feed", pool.submit(read_feed, {"name": urlparse(url).hostname or "Publisher", "url": url, "weight": 6})))
+                    tasks.append((url, "publisher-feed", pool.submit(run_with_source_cancellation, config.get("_cancel_event"), read_feed, {"name": urlparse(url).hostname or "Publisher", "url": url, "weight": 6})))
                 if config.get("_hacker_news"):
                     for query in config.get("_hn_queries") or queries[:2]:
-                        tasks.append((query, "hacker-news", pool.submit(hacker_news_search, query, days, max(12, min(limit, 50)))))
+                        tasks.append((query, "hacker-news", pool.submit(run_with_source_cancellation, config.get("_cancel_event"), hacker_news_search, query, days, max(12, min(limit, 50)))))
             else:
                 for query in queries:
                     submit_query(query)
@@ -742,9 +1094,9 @@ def collect_topic_sources(config, job_id, topic, limit=8, days=7, consume_source
                     detail=f"{len(selected)}/{limit} articles ready · {coverage['found'] + len(found)} search matches · {completed}/{len(tasks)} searches finished", percent=5)
         if initial:
             update_job(job_id, stage="Checking news sites", detail="Looking for articles directly from publishers", percent=9)
-            feeds = discover_publisher_feeds(found)
+            feeds = discover_publisher_feeds(found, cancel_event=config.get("_cancel_event"))
             with ThreadPoolExecutor(max_workers=5) as pool:
-                for future in as_completed([pool.submit(read_feed, {"name": urlparse(url).hostname or "Publisher", "url": url, "weight": 6}) for url in feeds]):
+                for future in as_completed([pool.submit(run_with_source_cancellation, config.get("_cancel_event"), read_feed, {"name": urlparse(url).hostname or "Publisher", "url": url, "weight": 6}) for url in feeds]):
                     check_generation_cancelled(config)
                     try:
                         found.extend(future.result())
@@ -920,13 +1272,40 @@ def headless_browser_html(url, timeout=12):
                    "--disable-crash-reporter", "--disable-breakpad", "--disable-crashpad-for-testing",
                    "--virtual-time-budget=8000",
                    "--user-data-dir=" + profile, "--dump-dom", url]
+        process = None
+        cancel_event = getattr(SOURCE_CANCEL_LOCAL, "event", None)
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            if cancel_event:
+                with SOURCE_PROCESSES_LOCK:
+                    if cancel_event.is_set():
+                        process.kill()
+                        raise GenerationCancelled("Generation cancelled by the user.")
+                    SOURCE_PROCESSES.setdefault(cancel_event, set()).add(process)
+            # communicate drains both pipes while waiting. Polling first and
+            # reading only after exit can deadlock on large DOM output.
+            stdout, stderr = communicate_with_timeout(process, timeout, cancel_event)
+            if process.returncode and not stdout.strip():
+                raise RuntimeError((stderr or "Chromium exited without page HTML")[-500:])
+            return stdout[:5_000_000]
+        except (OSError, subprocess.TimeoutExpired, GenerationCancelled) as exc:
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    process.kill()
+                process.communicate()
+            if isinstance(exc, GenerationCancelled):
+                raise
             raise RuntimeError(f"Headless Chromium could not render the page: {exc}") from exc
-        if completed.returncode and not completed.stdout.strip():
-            raise RuntimeError((completed.stderr or "Chromium exited without page HTML")[-500:])
-        return completed.stdout[:5_000_000]
+        finally:
+            if process is not None and cancel_event:
+                with SOURCE_PROCESSES_LOCK:
+                    active = SOURCE_PROCESSES.get(cancel_event)
+                    if active:
+                        active.discard(process)
+                        if not active:
+                            SOURCE_PROCESSES.pop(cancel_event, None)
 
 
 def playwright_article_html(url, timeout=16):
@@ -955,6 +1334,13 @@ def playwright_article_html(url, timeout=16):
     playwright, browser = state
     try:
         page = browser.new_page(user_agent=USER_AGENT)
+        cancel_event = getattr(SOURCE_CANCEL_LOCAL, "event", None)
+        if cancel_event:
+            with SOURCE_BROWSER_PAGES_LOCK:
+                if cancel_event.is_set():
+                    page.close()
+                    raise GenerationCancelled("Generation cancelled by the user.")
+                SOURCE_BROWSER_PAGES.setdefault(cancel_event, set()).add(page)
         page.route("**/*", lambda route: route.abort() if route.request.resource_type in {"image", "font", "media"} else route.continue_())
         browser_deadline = time.monotonic() + timeout
         time_left = lambda cap: max(100, min(cap, int((browser_deadline - time.monotonic()) * 1000)))
@@ -978,8 +1364,19 @@ def playwright_article_html(url, timeout=16):
             page.evaluate("window.scrollTo(0, 0)")
             return page.content()[:5_000_000], page.url
         finally:
-            page.close()
+            try:
+                page.close()
+            finally:
+                if cancel_event:
+                    with SOURCE_BROWSER_PAGES_LOCK:
+                        active = SOURCE_BROWSER_PAGES.get(cancel_event)
+                        if active:
+                            active.discard(page)
+                            if not active:
+                                SOURCE_BROWSER_PAGES.pop(cancel_event, None)
     except Exception as exc:
+        if getattr(SOURCE_CANCEL_LOCAL, "event", None) and SOURCE_CANCEL_LOCAL.event.is_set():
+            raise GenerationCancelled("Generation cancelled by the user.") from exc
         raise RuntimeError(f"Playwright could not render the page: {exc}") from exc
 
 
@@ -1048,8 +1445,9 @@ def resolve_publisher_url(item):
                 body = urlencode({"f.req": json.dumps([[["Fbv4je", json.dumps(payload), None, "generic"]]])}).encode()
                 request = Request("https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je", data=body,
                                   headers={"User-Agent": USER_AGENT, "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8", "Referer": "https://news.google.com/"})
-                with urlopen(request, timeout=7) as response:
-                    resolved = parse_google_news_resolution(response.read(200000).decode("utf-8", "replace"))
+                with open_source_url(request, timeout=7) as response:
+                    response_body = response.read(200000)
+                resolved = parse_google_news_resolution(response_body.decode("utf-8", "replace"))
                 if resolved and not is_google_news_url(resolved):
                     return resolved
             if publisher_url:
@@ -1242,17 +1640,31 @@ def call_model(config, messages, max_tokens):
     request_started = time.perf_counter()
     job_id = config.get("_job_id")
     phase = config.get("_phase", "model call")
+    cancel_event = config.get("_cancel_event") if isinstance(config, dict) else None
     if job_id:
         print(f"[generation {str(job_id)[:8]}] LLM request started · {phase}", flush=True)
+    connection = None
     try:
-        with urlopen(request, timeout=600) as response:
-            result = json.loads(response.read(8_000_000))
-    except HTTPError as exc:
-        body = exc.read(500).decode("utf-8", "replace")
-        raise RuntimeError(f"The OpenAI-compatible model endpoint returned HTTP {exc.code}: {body}") from exc
-    except (URLError, TimeoutError) as exc:
+        endpoint = urlparse(request.full_url)
+        connection_type = CancellableHTTPSConnection if endpoint.scheme == "https" else CancellableHTTPConnection
+        connection = connection_type(endpoint.hostname, endpoint.port, timeout=600)
+        register_model_connection(cancel_event, connection)
+        target = endpoint.path or "/"
+        if endpoint.query:
+            target += "?" + endpoint.query
+        connection.request("POST", target, body=request.data, headers=dict(request.header_items()))
+        response = connection.getresponse()
+        body = response.read(8_000_000)
+        if response.status >= 400:
+            raise RuntimeError(f"The OpenAI-compatible model endpoint returned HTTP {response.status}: {body[:500].decode('utf-8', 'replace')}")
+        result = json.loads(body)
+    except (OSError, http.client.HTTPException, TimeoutError, ValueError) as exc:
+        if cancel_event and cancel_event.is_set():
+            raise GenerationCancelled("Generation cancelled by the user.") from exc
         raise RuntimeError(f"Could not connect to the model endpoint: {exc}") from exc
     finally:
+        if connection is not None:
+            unregister_model_connection(cancel_event, connection)
         if job_id:
             print(f"[generation {str(job_id)[:8]}] LLM request finished · {phase} · {time.perf_counter() - request_started:.1f}s", flush=True)
     choice = (result.get("choices") or [{}])[0]
@@ -1283,7 +1695,7 @@ def call_model_stream(config, messages, max_tokens):
                                **({"Authorization": "Bearer " + config["apiKey"]} if config.get("apiKey") else {})})
     events = queue.Queue(maxsize=32)
     stopped = threading.Event()
-    upstream = []
+    cancel_event = config.get("_cancel_event") if isinstance(config, dict) else None
 
     def publish(value):
         while not stopped.is_set():
@@ -1294,23 +1706,33 @@ def call_model_stream(config, messages, max_tokens):
                 pass
 
     def read_response():
+        connection = None
         try:
-            with urlopen(request, timeout=600) as response:
-                upstream.append(response)
-                if stopped.is_set():
-                    return
+            endpoint = urlparse(request.full_url)
+            connection_type = CancellableHTTPSConnection if endpoint.scheme == "https" else CancellableHTTPConnection
+            connection = connection_type(endpoint.hostname, endpoint.port, timeout=600)
+            register_model_connection(cancel_event, connection)
+            target = endpoint.path or "/"
+            if endpoint.query:
+                target += "?" + endpoint.query
+            connection.request("POST", target, body=request.data, headers=dict(request.header_items()))
+            response = connection.getresponse()
+            if response.status >= 400:
+                body = response.read(500).decode("utf-8", "replace")
+                raise RuntimeError(f"The OpenAI-compatible model endpoint returned HTTP {response.status}: {body}")
+            if not stopped.is_set():
                 for value in completion_events(response, stopped.is_set):
                     if stopped.is_set():
                         break
                     publish(value)
-        except HTTPError as exc:
-            body = exc.read(500).decode("utf-8", "replace")
-            publish(RuntimeError(f"The OpenAI-compatible model endpoint returned HTTP {exc.code}: {body}"))
-        except (URLError, TimeoutError) as exc:
-            publish(RuntimeError(f"Could not connect to the model endpoint: {exc}"))
+        except (OSError, http.client.HTTPException, TimeoutError, ValueError) as exc:
+            if not (cancel_event and cancel_event.is_set()):
+                publish(RuntimeError(f"Could not connect to the model endpoint: {exc}"))
         except Exception as exc:
             publish(RuntimeError(str(exc)))
         finally:
+            if connection is not None:
+                unregister_model_connection(cancel_event, connection)
             publish(None)
 
     threading.Thread(target=read_response, daemon=True).start()
@@ -1326,6 +1748,7 @@ def call_model_stream(config, messages, max_tokens):
                     yield {"keepalive": True}
                     last_keepalive = time.monotonic()
                 continue
+            check_generation_cancelled(config)
             if event is None:
                 if not received:
                     raise RuntimeError("The model returned no final answer. Check its reasoning settings or output budget.")
@@ -1336,10 +1759,6 @@ def call_model_stream(config, messages, max_tokens):
             yield event
     finally:
         stopped.set()
-        # Closing in another thread also lets a stopped browser return promptly
-        # when a provider is silent or slow. Providers control inference teardown.
-        for response in upstream:
-            threading.Thread(target=response.close, daemon=True).start()
 
 
 def plan_chat_research(config, messages, question):
@@ -1610,11 +2029,14 @@ def run_job(job_id, config):
 
         def article_reader_worker():
             nonlocal read_count
+            previous_source_event = getattr(SOURCE_CANCEL_LOCAL, "event", None)
+            SOURCE_CANCEL_LOCAL.event = config.get("_cancel_event")
             while True:
                 task = reader_queue.get()
                 try:
                     if task is None:
                         close_article_browser_session()
+                        SOURCE_CANCEL_LOCAL.event = previous_source_event
                         return
                     index, source = task
                     try:
@@ -2041,25 +2463,40 @@ class Handler(BaseHTTPRequestHandler):
             client_id = require_client_id(body.get("client_id"))
             config = configured_model()
             config.update({
-                "topic": str(options.get("topic", ""))[:300],
+                "topic": str(options.get("topic", "")).strip()[:300],
                 "articleCount": max(1, min(100, int(options.get("articleCount", 8)))),
                 "searchDays": max(1, min(90, int(options.get("searchDays", 7)))),
             })
+            request_options = {key: config[key] for key in ("topic", "articleCount", "searchDays")}
             job_id = uuid.uuid4().hex
             cancel_event = threading.Event()
             config["_cancel_event"] = cancel_event
             config["_job_id"] = job_id
+            existing_job_id = None
+            conflicting_job_id = None
             with JOBS_LOCK:
+                existing = next((job for job in JOBS.values() if job.get("client_id") == client_id and job.get("status") == "running"), None)
+                if existing:
+                    if existing.get("options") == request_options:
+                        existing_job_id = existing["id"]
+                    else:
+                        conflicting_job_id = existing["id"]
                 # Keep each browser's reconnectable history independent. A busy
                 # client must not evict another client's completed edition.
-                completed_jobs = sorted((job for job in JOBS.values() if job.get("client_id") == client_id and job.get("status") != "running"), key=lambda job: job.get("started_at", ""), reverse=True)
-                for old_job in completed_jobs[100:]:
-                    JOBS.pop(old_job["id"], None)
-                    JOB_CANCEL_EVENTS.pop(old_job["id"], None)
-                JOBS[job_id] = {"id": job_id, "client_id": client_id, "status": "running", "stage": "Starting", "detail": "Preparing source collection", "percent": 1, "completed": 0, "total": 0, "started_at": now_iso()}
-                JOB_CANCEL_EVENTS[job_id] = cancel_event
-            threading.Thread(target=run_job, args=(job_id, config), daemon=True).start()
-            self.send_json(202, {"job_id": job_id})
+                if not existing_job_id and not conflicting_job_id:
+                    completed_jobs = sorted((job for job in JOBS.values() if job.get("client_id") == client_id and job.get("status") != "running"), key=lambda job: job.get("started_at", ""), reverse=True)
+                    for old_job in completed_jobs[100:]:
+                        JOBS.pop(old_job["id"], None)
+                        JOB_CANCEL_EVENTS.pop(old_job["id"], None)
+                    JOBS[job_id] = {"id": job_id, "client_id": client_id, "status": "running", "stage": "Starting", "detail": "Preparing source collection", "percent": 1, "completed": 0, "total": 0, "options": request_options, "started_at": now_iso()}
+                    JOB_CANCEL_EVENTS[job_id] = cancel_event
+            if conflicting_job_id:
+                self.send_json(409, {"error": "A paper is already being generated for this browser with different settings. Let it finish or cancel it before starting another."})
+            elif existing_job_id:
+                self.send_json(202, {"job_id": existing_job_id, "reused": True})
+            else:
+                threading.Thread(target=run_job, args=(job_id, config), daemon=True).start()
+                self.send_json(202, {"job_id": job_id})
         except Exception as exc:
             self.send_json(400, {"error": str(exc)})
 
@@ -2071,6 +2508,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             job_id = str(body.get("job_id", ""))
             client_id = require_client_id(body.get("client_id"))
+            event = None
             with JOBS_LOCK:
                 job = owned_job(job_id, client_id)
                 if not job:
@@ -2086,6 +2524,9 @@ class Handler(BaseHTTPRequestHandler):
                         "finished_at": now_iso(),
                     })
                 status = job.get("status")
+            if event:
+                interrupt_model_requests(event)
+                interrupt_source_requests(event)
             self.send_json(200, {"status": status})
         except Exception as exc:
             self.send_json(400, {"error": str(exc)[:500]})
@@ -2101,6 +2542,9 @@ class Handler(BaseHTTPRequestHandler):
                 event = CHAT_REQUESTS.get(key)
                 if event:
                     event.set()
+            if event:
+                interrupt_model_requests(event)
+                interrupt_source_requests(event)
             self.send_json(200, {"cancelled": bool(event)})
         except Exception:
             self.send_json(400, {"error": "Invalid cancellation request"})
@@ -2151,13 +2595,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             streaming = body.get("stream") is True
+            config["_cancel_event"] = cancel_event
             if streaming:
                 chat_key = client_request_key(body)
                 with CHAT_REQUESTS_LOCK:
                     if chat_key in CHAT_REQUESTS:
                         raise ValueError("Chat request is already running")
                     CHAT_REQUESTS[chat_key] = cancel_event
-                config["_cancel_event"] = cancel_event
                 config["_stream_model"] = True
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
@@ -2178,7 +2622,7 @@ class Handler(BaseHTTPRequestHandler):
                 emit("status", message="Deciding whether web research is needed…")
                 try:
                     with ThreadPoolExecutor(max_workers=1) as planning_pool:
-                        needs_search, query = await_research(planning_pool.submit(plan_chat_research, config, messages, question))
+                        needs_search, query = await_research(planning_pool.submit(run_with_source_cancellation, cancel_event, plan_chat_research, config, messages, question))
                 except (GenerationCancelled, BrokenPipeError, ConnectionResetError):
                     raise
                 except Exception:
@@ -2189,7 +2633,7 @@ class Handler(BaseHTTPRequestHandler):
                 query = query or str(body.get("search_query", "")).strip()[:400]
                 try:
                     with ThreadPoolExecutor(max_workers=1) as search_pool:
-                        results = await_research(search_pool.submit(search_web, query, 5))
+                        results = await_research(search_pool.submit(run_with_source_cancellation, cancel_event, search_web, query, 5))
                     emit("status", message=f"Reading {min(5, len(results))} web sources…")
                     def read_chat_result(result):
                         link = str(result.get("url", ""))[:2000]
@@ -2218,7 +2662,7 @@ class Handler(BaseHTTPRequestHandler):
                             "read_status": article.get("read_status", "Search result excerpt"),
                         }
                     with ThreadPoolExecutor(max_workers=3) as pool:
-                        futures = [pool.submit(read_chat_result, result) for result in results[:5]]
+                        futures = [pool.submit(run_with_source_cancellation, cancel_event, read_chat_result, result) for result in results[:5]]
                         web_sources = [await_research(future) for future in futures]
                 except (GenerationCancelled, BrokenPipeError, ConnectionResetError):
                     raise
@@ -2299,6 +2743,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(400, {"error": str(exc)[:1200]})
         finally:
             cancel_event.set()
+            interrupt_model_requests(cancel_event)
+            interrupt_source_requests(cancel_event)
             if chat_key:
                 with CHAT_REQUESTS_LOCK:
                     if CHAT_REQUESTS.get(chat_key) is cancel_event:

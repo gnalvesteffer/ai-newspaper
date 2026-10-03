@@ -74,7 +74,7 @@ class SourceTests(unittest.TestCase):
         html = b'<div data-n-a-sg="signed" data-n-a-ts="123"></div>'
         response = unittest.mock.MagicMock()
         response.__enter__.return_value.read.return_value = json.dumps([['wrb.fr', 'Fbv4je', json.dumps(['garturlres', 'https://publisher.test/story'])]]).encode()
-        with patch.object(server, 'fetch_bytes', return_value=(html, 'text/html', row['link'], 'utf-8')), patch.object(server, 'urlopen', return_value=response) as opening:
+        with patch.object(server, 'fetch_bytes', return_value=(html, 'text/html', row['link'], 'utf-8')), patch.object(server, 'open_source_url', return_value=response) as opening:
             self.assertEqual(server.resolve_publisher_url(row), 'https://publisher.test/story')
             self.assertIn('garturlreq', opening.call_args.args[0].data.decode())
 
