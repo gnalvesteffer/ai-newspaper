@@ -352,7 +352,15 @@ def main():
         mobile.goto(args.base_url, wait_until='commit')
         mobile.wait_for_timeout(250)
         mobile.wait_for_function('typeof render === "function"')
-        mobile.evaluate('''paper=>render(paper,Date.parse('2026-10-02T12:00:00Z'),true,'mobile-review',[],null)''', PAPER)
+        mobile_explanations = [{'quote': 'Container gardens make small spaces productive',
+            'context': 'Choose containers with drainage and plants suited to the available sunlight.',
+            'origin': {'type': 'article', 'id': 'garden-1'},
+            'explanation': 'The saved passage recommends compact containers and choosing plants suited to the available sunlight.', 'sources': []},
+            {'quote': 'A balcony herb garden can thrive in partial shade',
+            'context': 'Basil, parsley, and mint tolerate limited direct sunlight when watered consistently.',
+            'origin': {'type': 'article', 'id': 'garden-2'},
+            'explanation': 'The saved note says basil, parsley, and mint can grow with limited direct sun.', 'sources': []}]
+        mobile.evaluate('''({paper,explanations})=>render(paper,Date.parse('2026-10-02T12:00:00Z'),true,'mobile-review',explanations,null)''', {'paper': PAPER, 'explanations': mobile_explanations})
         topic = mobile.locator('#paper-topic')
         topic.fill('Balcony gardens need room for herbs and compact vegetables. ' * 5)
         before_page_scroll = mobile.evaluate('scrollY')
@@ -398,11 +406,48 @@ def main():
         assert mobile.locator('#chat-context-text').inner_text().startswith('Container gardens make small spaces productive')
         assert mobile.locator('#chat-panel').bounding_box()['x'] == 0
         mobile.locator('#chat-close').click()
+        cached_heading = mobile.locator('.article[data-article-id="garden-1"] h3')
+        cached_heading.scroll_into_view_if_needed()
+        cached_heading.tap()
+        mobile.wait_for_function('document.querySelector("#explain-popover")?.hidden === false')
+        assert 'saved passage recommends compact containers' in mobile.locator('.explain-answer').inner_text()
+        before_explanation_scroll = mobile.evaluate('scrollY')
+        for _ in range(4):
+            touch_point = mobile.evaluate('''()=>{const pop=document.querySelector('#explain-popover').getBoundingClientRect();for(const element of document.querySelectorAll('.article p,.article .meta,.article h3,.theme p')){const r=element.getBoundingClientRect(),x=Math.max(r.left+4,Math.min(r.right-4,innerWidth/2)),y=Math.max(r.top+4,Math.min(r.bottom-4,innerHeight-32));if(r.width>8&&r.height>8&&y>80&&y<innerHeight-16&&!(x>=pop.left&&x<=pop.right&&y>=pop.top&&y<=pop.bottom))return{x,y}}return{x:innerWidth-5,y:innerHeight-35}}''')
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': touch_point['x'], 'y': touch_point['y'], 'id': 2}]})
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': touch_point['x'], 'y': max(40, touch_point['y'] - 280), 'id': 2}]})
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': touch_point['x'], 'y': max(30, touch_point['y'] - 560), 'id': 2}]})
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+            mobile.wait_for_timeout(100)
+            if mobile.evaluate('''()=>{const range=savedRanges.find(x=>x.item.quote==='Container gardens make small spaces productive')?.range;const rect=range?.getBoundingClientRect();return !rect||rect.bottom<0||rect.top>innerHeight}'''):
+                break
+        assert mobile.evaluate('scrollY') > before_explanation_scroll, 'Touch scrolling did not move the page'
+        assert mobile.evaluate('''()=>{const range=savedRanges.find(x=>x.item.quote==='Container gardens make small spaces productive')?.range;const rect=range?.getBoundingClientRect();return !rect||rect.bottom<0||rect.top>innerHeight}'''), 'Touch scrolling did not move the saved passage out of view'
+        assert mobile.locator('#explain-popover').is_visible(), 'Scrolling a cached mobile explanation out of view closed its popover'
+        assert mobile.evaluate('document.body.classList.contains("explanation-open")')
+        mobile.screenshot(path=str(output / 'mobile-cached-explanation-scrolled.png'))
+        mobile.locator('.explain-close').click()
+        assert mobile.locator('#explain-popover').is_hidden(), 'The explanation close control did not dismiss the popover'
+        second_cached_heading = mobile.locator('.article[data-article-id="garden-2"] h3')
+        second_cached_heading.scroll_into_view_if_needed()
+        second_cached_heading.tap()
+        assert mobile.locator('.explain-quote').inner_text() == 'A balcony herb garden can thrive in partial shade'
+        assert 'limited direct sun' in mobile.locator('.explain-answer').inner_text(), 'Opening another saved passage retained stale explanation content'
+        mobile.evaluate('window.scrollTo({top:0,behavior:"instant"})')
+        mobile.locator('.masthead h1').tap()
+        assert mobile.locator('#explain-popover').is_hidden(), 'Tapping outside the paper left the cached explanation open'
+        second_cached_heading.scroll_into_view_if_needed()
+        second_cached_heading.tap()
+        unexplained_passage = mobile.locator('.theme p').first
+        unexplained_passage.scroll_into_view_if_needed()
+        mobile.evaluate('element=>window.scrollBy({top:element.getBoundingClientRect().top-innerHeight*.68,behavior:"instant"})', unexplained_passage.element_handle())
+        unexplained_passage.tap()
+        assert mobile.locator('#explain-popover').is_hidden(), 'Tapping an unexplained story left the cached explanation open'
         assert not mobile.locator('#editions-toggle').evaluate('e=>getComputedStyle(e).visibility === "hidden"')
         mobile_context.close()
         assert not errors, errors
         browser.close()
-        print(f'PASS: generation/reload, validation, settings drafts, explanation ranges, chat tables, archive, responsive layouts, and touch-enabled explanation/read/chat controls. Screenshots: {output}')
+        print(f'PASS: generation/reload, validation, settings drafts, explanation ranges and touch scrolling, chat tables, archive, responsive layouts, and touch-enabled explanation/read/chat controls. Screenshots: {output}')
 
 
 if __name__ == '__main__':

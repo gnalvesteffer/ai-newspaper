@@ -70,6 +70,8 @@ SOURCE_PROCESSES: dict[threading.Event, set] = {}
 SOURCE_PROCESSES_LOCK = threading.Lock()
 SOURCE_BROWSER_PAGES: dict[threading.Event, set] = {}
 SOURCE_BROWSER_PAGES_LOCK = threading.Lock()
+DNS_PROCESS_LIMIT = 8
+DNS_PROCESS_SLOTS = threading.BoundedSemaphore(DNS_PROCESS_LIMIT)
 MODEL_CONFIG: dict[str, object] = {}
 CHAT_REQUESTS = {}
 CHAT_REQUESTS_LOCK = threading.Lock()
@@ -82,19 +84,30 @@ class GenerationCancelled(Exception):
 
 
 def cancellable_getaddrinfo(host, port, event, family=0, type=0, proto=0, flags=0, timeout=20):
-    """Resolve in a disposable process so a stalled system resolver cannot exhaust workers."""
+    """Resolve in a bounded disposable process so stalled DNS cannot exhaust workers."""
     helper = (
         "import json,socket,sys; "
         "a=socket.getaddrinfo(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), "
         "int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6])); "
         "print(json.dumps(a))"
     )
-    process = subprocess.Popen(
-        [sys.executable, "-c", helper, str(host), str(port), str(family), str(type), str(proto), str(flags)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
     deadline = time.monotonic() + timeout
+    acquired = False
+    process = None
     try:
+        while not acquired:
+            if event and event.is_set():
+                raise GenerationCancelled("Generation cancelled by the user.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.gaierror("DNS lookup queue timed out")
+            acquired = DNS_PROCESS_SLOTS.acquire(timeout=min(.1, remaining))
+        if event and event.is_set():
+            raise GenerationCancelled("Generation cancelled by the user.")
+        process = subprocess.Popen(
+            [sys.executable, "-c", helper, str(host), str(port), str(family), str(type), str(proto), str(flags)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
         while True:
             if event and event.is_set():
                 raise GenerationCancelled("Generation cancelled by the user.")
@@ -109,12 +122,15 @@ def cancellable_getaddrinfo(host, port, event, family=0, type=0, proto=0, flags=
             except subprocess.TimeoutExpired:
                 continue
     finally:
-        if process.poll() is None:
-            process.kill()
-        try:
-            process.communicate(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        if acquired:
+            DNS_PROCESS_SLOTS.release()
 
 
 def require_client_id(value):

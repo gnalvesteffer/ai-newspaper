@@ -279,6 +279,68 @@ class GenerationConcurrencyTests(unittest.TestCase):
         addresses = server.cancellable_getaddrinfo('localhost', 80, None, timeout=5)
         self.assertTrue(addresses, 'a fresh resolver lookup did not recover after all stalled processes were killed')
 
+    def test_dns_helper_processes_are_bounded_and_queued_lookups_can_cancel(self):
+        lock = threading.Lock()
+        live = 0
+        maximum = 0
+        launched = {}
+        limit_reached = threading.Event()
+        class StalledProcess:
+            def __init__(self, args, **_kwargs):
+                nonlocal live, maximum
+                self.host = args[3]
+                self.returncode = None
+                self.released = threading.Event()
+                with lock:
+                    live += 1
+                    maximum = max(maximum, live)
+                    launched[self.host] = self
+                    if live >= server.DNS_PROCESS_LIMIT:
+                        limit_reached.set()
+            def communicate(self, timeout=None):
+                if self.returncode is None and not self.released.wait(timeout or 0):
+                    raise subprocess.TimeoutExpired('dns', timeout)
+                return ('', '')
+            def poll(self): return self.returncode
+            def kill(self):
+                nonlocal live
+                if self.returncode is None:
+                    self.returncode = -9
+                    with lock: live -= 1
+                    self.released.set()
+
+        count = server.DNS_PROCESS_LIMIT + 4
+        cancels = [threading.Event() for _ in range(count)]
+        outcomes = [{} for _ in range(count)]
+        def resolve(index):
+            host = f'bounded-{index}.example'
+            try:
+                server.cancellable_getaddrinfo(host, 443, cancels[index], timeout=10)
+            except Exception as exc:
+                outcomes[index]['error'] = exc
+
+        with patch.object(server.subprocess, 'Popen', StalledProcess):
+            workers = [threading.Thread(target=resolve, args=(index,), daemon=True) for index in range(count)]
+            for worker in workers: worker.start()
+            self.assertTrue(limit_reached.wait(2), 'the resolver process cap was never reached')
+            time.sleep(.15)
+            with lock:
+                self.assertEqual(live, server.DNS_PROCESS_LIMIT)
+                self.assertLessEqual(maximum, server.DNS_PROCESS_LIMIT)
+                queued = [i for i in range(count) if f'bounded-{i}.example' not in launched]
+                active = [i for i in range(count) if f'bounded-{i}.example' in launched]
+            self.assertEqual(len(queued), 4, 'lookups did not queue behind the process limit')
+            for index in queued: cancels[index].set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and any('error' not in outcomes[i] for i in queued):
+                time.sleep(.01)
+            self.assertTrue(all(isinstance(outcomes[i].get('error'), server.GenerationCancelled) for i in queued), 'a queued DNS lookup did not cancel promptly')
+            for index in active: cancels[index].set()
+            for worker in workers: worker.join(2)
+            self.assertTrue(all(not worker.is_alive() for worker in workers), 'resolver process slots remained occupied after cancellation')
+            self.assertEqual(live, 0)
+        self.assertTrue(all(isinstance(row.get('error'), server.GenerationCancelled) for row in outcomes))
+
     @unittest.skipUnless(server.find_headless_browser(), 'Playwright Chromium is not installed')
     def test_cancel_closes_a_playwright_page_during_navigation(self):
         SlowSourceHandler.request_seen.clear()
