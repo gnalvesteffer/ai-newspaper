@@ -25,6 +25,10 @@ When reviewing generation, include a broad news request, a list of independent i
 
 Use deterministic pipeline tests to cover a 100-article quota with rejected slots, a late model failure after partial acceptance, cancellation, and planned location scope reaching summary workers. Mocked UI results cannot prove ingestion yield. For live reviews, bound the requests and record elapsed time, accepted counts, retrieval coverage, runtime errors, and network limitations. Review wording as a news reader: implementation details belong in setup documentation or expandable reading details, not headline controls.
 
+## Personalized in-depth feature
+
+When reviewing the paper's **A closer look** article, use at least one prompt whose best shape is not a guide (for example, a local-impact topic such as “Killeen, TX”) and one prompt suited to an explainer or practical guide. Confirm the model plans focused searches, inspects what it finds, and requests another search only when evidence has a meaningful gap; supplemental sources remain outside the requested article count, and each section/visual links only to sources whose exact supporting quote is present in saved source text. Check the restrained note when supplemental searches fail or produce no cited sources. Check that older sources are presented as background with their date when available, and excerpts remain labeled honestly. Open a cited web source, highlight feature prose for an explanation, and ask chat about a supplemental source; verify the saved edition retains its source text and explanations stay scoped to that edition. Inspect the diagram, table, and timeline when returned, plus a no-visual case. Capture desktop and narrow-phone screenshots with the same deterministic paper and inspect heading hierarchy, long source labels, table reflow, workflow stacking, selection/highlight behavior, and whether the extra article overwhelms the requested news. Fixture screenshots demonstrate layout only, not research relevance or model grounding.
+
 ## Repeatable UI regression pass
 
 Run the bundled script against the running app:
