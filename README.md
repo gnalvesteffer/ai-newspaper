@@ -89,7 +89,7 @@ The page uses a locally served paper-grain texture. Playwright is optional and o
 
 ## Agent guidance
 
-Project-specific agent skills live in `.agents/skills/`: `project-guide` covers architecture and safe changes; `run-and-debug` covers startup, LAN access, and troubleshooting; `reader-e2e-review` covers real browser reviews and repeatable UI regression checks.
+Project-specific agent skills live in `.agents/skills/`. Start with `project-guide` for architecture and `run-and-debug` for local operation. Use `product-review-team` to coordinate product, design, engineering, QA, and documentation reviews; use focused reviews such as `product-design-review`, `accessibility-review`, `privacy-security-review`, `generation-pipeline-review`, `source-quality-review`, `narration-quality-review`, `incident-diagnostics-review`, `release-migration-review`, and `visual-regression-review` when appropriate. `reader-e2e-review` covers real-browser validation and the independent review and screenshot requirements for PRs.
 
 ## Read aloud
 
