@@ -2602,7 +2602,9 @@ def run_job(job_id, config):
             for visual in feature["visuals"]:
                 for key in ("steps", "rows", "events", "points"):
                     used_feature_ids.update(source_id for item in visual.get(key, []) for source_id in item.get("article_ids", []))
-                used_feature_ids.update(visual.get("feedback", {}).get("article_ids", []))
+                feedback = visual.get("feedback") or {}
+                if isinstance(feedback, dict):
+                    used_feature_ids.update(feedback.get("article_ids", []))
         feature_source_records = [{"id": source["id"], "headline": clean_title(source), "publisher": source["publisher"],
             "date": source.get("published", ""), "link": source.get("article_url") or source["link"],
             "read_status": source.get("read_status", "Search result excerpt"), "read_kind": source.get("read_kind", "excerpt"),
